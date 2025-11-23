@@ -4,13 +4,12 @@ import { Slider } from '@/components/ui/slider';
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Label } from '@/components/ui/label';
 import { removeBackground } from "@imgly/background-removal";
 import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "@/components/ui/accordion";
-import { Trash2, Copy, Upload, Download, Plus, Droplet, Undo, Redo, Sliders, CircleDot, RotateCw, Loader2, FlipHorizontal, FlipVertical, Check, Palette, Bold, Italic, Underline, Strikethrough, Type, CaseLower, CaseUpper, Sparkles } from 'lucide-react';
+import { Trash2, Copy, Upload, Plus, Undo, Redo, Loader2, FlipHorizontal, FlipVertical, Check, Bold, Italic, Underline, Strikethrough, Type, CaseLower, CaseUpper, Sparkles, LogOut, User as UserIcon } from 'lucide-react';
 import { motion } from "framer-motion";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -26,24 +25,12 @@ import {
     AlertDialogHeader,
     AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { getAuth, onAuthStateChanged } from 'firebase/auth';
+import { Avatar, AvatarImage, AvatarFallback } from '@/components/ui/avatar';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { useRouter } from 'next/navigation';
-import { initializeApp } from 'firebase/app';
-
-// Firebase configuration (make sure this matches your config in landing.tsx)
-const firebaseConfig = {
-    apiKey: "AIzaSyA-ag9BCwGhFEsuAQSeG7MVis98xUhYJBU",
-    authDomain: "textinsideimage.firebaseapp.com",
-    projectId: "textinsideimage",
-    storageBucket: "textinsideimage.appspot.com",
-    messagingSenderId: "558991178680",
-    appId: "1:558991178680:web:959c2d6736ec94452d6d4d",
-    measurementId: "G-8QBQY4PZ14"
-};
-
-// Initialize Firebase
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
+import { auth } from '@/app/firebase';
+import { PricingDialog } from '@/components/PricingDialog';
+import { Crown, Coins, Infinity as InfinityIcon } from 'lucide-react';
 
 interface GoogleFont {
     family: string;
@@ -196,6 +183,19 @@ interface TextItem {
     isForeground: boolean;
     gradientAngle: number;
     textTransform: 'none' | 'uppercase' | 'lowercase';
+    shadowColor: string;
+    shadowBlur: number;
+    shadowOffsetX: number;
+    shadowOffsetY: number;
+    strokeColor: string;
+    strokeWidth: number;
+    letterSpacing: number;
+    curveStrength: number;
+    skewX: number;
+    skewY: number;
+    extrusionDepth: number;
+    extrusionColor: string;
+    extrusionAngle: number;
 }
 
 type HistoryEntry = TextItem[];
@@ -206,7 +206,7 @@ const ImageEditorPage = () => {
     const [items, setItems] = useState<TextItem[]>([]);
     const [isLoading, setIsLoading] = useState(false);
     const [isRemovingBackground, setIsRemovingBackground] = useState(false);
-    const [error, setError] = useState(null);
+    const [, setError] = useState(null);
     const [imageWidth, setImageWidth] = useState(0);
     const [imageHeight, setImageHeight] = useState(0);
     const [showDeleteDialog, setShowDeleteDialog] = useState(false);
@@ -215,8 +215,36 @@ const ImageEditorPage = () => {
     const [history, setHistory] = useState<HistoryEntry[]>([]);
     const [historyIndex, setHistoryIndex] = useState(-1);
     const [layerSettings, setLayerSettings] = useState({
-        background: { filter: 'none', intensity: 100 },
-        foreground: { filter: 'none', intensity: 100 }
+        background: {
+            filter: 'none',
+            intensity: 100,
+            saturation: 0,
+            hue: 0,
+            temperature: 0,
+            shadows: 0,
+            highlights: 0,
+            exposure: 0,
+            vignette: 0,
+            sharpen: 0,
+            noise: 0,
+            rotation: 0,
+            scale: 100
+        },
+        foreground: {
+            filter: 'none',
+            intensity: 100,
+            saturation: 0,
+            hue: 0,
+            temperature: 0,
+            shadows: 0,
+            highlights: 0,
+            exposure: 0,
+            vignette: 0,
+            sharpen: 0,
+            noise: 0,
+            rotation: 0,
+            scale: 100
+        }
     });
     const [activeImageTab, setActiveImageTab] = useState<'background' | 'foreground'>('background');
     const [activeTab, setActiveTab] = useState('text');
@@ -230,14 +258,56 @@ const ImageEditorPage = () => {
     const [isForegroundLoaded, setIsForegroundLoaded] = useState(false);
 
 
-    const [dominantColors, setDominantColors] = useState<string[]>([]);
+    const [, setDominantColors] = useState<string[]>([]);
     const [fonts, setFonts] = useState<string[]>([]);
     const [isDragOver, setIsDragOver] = useState(false);
+
+    // Credit System State
+    const [credits, setCredits] = useState(0);
+    const [subscriptionStatus, setSubscriptionStatus] = useState('free');
+    const [showPricingDialog, setShowPricingDialog] = useState(false);
+
     const router = useRouter();
 
     useEffect(() => {
+        const unsubscribe = onAuthStateChanged(auth, (user) => {
+            if (!user) {
+                router.push('/');
+            } else {
+                // Fetch credits
+                fetch(`/api/user/credits?uid=${user.uid}`)
+                    .then(res => res.json())
+                    .then(data => {
+                        setCredits(data.credits);
+                        setSubscriptionStatus(data.subscriptionStatus);
+                    });
+            }
+        });
+        return () => unsubscribe();
+    }, [router]);
+
+    // Check for success param from Stripe
+    useEffect(() => {
+        const params = new URLSearchParams(window.location.search);
+        if (params.get('success') === 'true') {
+            // Refresh credits
+            if (auth.currentUser) {
+                fetch(`/api/user/credits?uid=${auth.currentUser.uid}`)
+                    .then(res => res.json())
+                    .then(data => {
+                        setCredits(data.credits);
+                        setSubscriptionStatus(data.subscriptionStatus);
+                        // Clear URL param
+                        window.history.replaceState({}, '', '/editor');
+                    });
+            }
+        }
+    }, []);
+
+    useEffect(() => {
         // Fetch fonts from Google Fonts API
-        fetch('https://www.googleapis.com/webfonts/v1/webfonts?key=AIzaSyCG9LNdH6W6bOyR-lCDvM73wPNVpVkk0Tw')
+        const apiKey = process.env.NEXT_PUBLIC_GOOGLE_FONTS_API_KEY;
+        fetch(`https://www.googleapis.com/webfonts/v1/webfonts?key=${apiKey}`)
             .then(response => response.json())
             .then((data: GoogleFontsResponse) => {
                 setFonts(data.items.map((item: GoogleFont) => item.family));
@@ -245,15 +315,7 @@ const ImageEditorPage = () => {
     }, []);
 
     useEffect(() => {
-        const unsubscribe = onAuthStateChanged(auth, (user) => {
-            if (!user) {
-                // User is not logged in, redirect to landing page
-                router.push('/');
-            }
-        });
-
-        // Cleanup subscription on unmount
-        return () => unsubscribe();
+        // Moved auth check to the combined effect above
     }, [router]);
 
     const extractColors = (imageUrl: string) => {
@@ -378,7 +440,20 @@ const ImageEditorPage = () => {
             rotation: 0,
             isForeground: false,
             gradientAngle: 90,
-            textTransform: 'none'
+            textTransform: 'none',
+            shadowColor: '#000000',
+            shadowBlur: 0,
+            shadowOffsetX: 0,
+            shadowOffsetY: 0,
+            strokeColor: '#000000',
+            strokeWidth: 0,
+            letterSpacing: 0,
+            curveStrength: 0,
+            skewX: 0,
+            skewY: 0,
+            extrusionDepth: 0,
+            extrusionColor: '#000000',
+            extrusionAngle: 45
         };
         setItems(prevItems => [...prevItems, newItem]);
         addToHistory([...items, newItem]);
@@ -575,6 +650,21 @@ const ImageEditorPage = () => {
                     img.onload = () => {
                         setImageWidth(img.width);
                         setImageHeight(img.height);
+
+                        // Auto-zoom small images to fit better in viewport
+                        // Assume a typical viewport of ~800x600 for the canvas area
+                        const viewportWidth = 800;
+                        const viewportHeight = 600;
+                        const targetFill = 0.8; // Fill 80% of viewport
+
+                        const scaleToFitWidth = (viewportWidth * targetFill) / img.width;
+                        const scaleToFitHeight = (viewportHeight * targetFill) / img.height;
+                        const autoZoom = Math.min(scaleToFitWidth, scaleToFitHeight);
+
+                        // Only zoom in if image is smaller than viewport, cap at 2x
+                        const initialZoom = Math.min(Math.max(autoZoom, 1), 2);
+                        setZoom(initialZoom);
+
                         setIsLoading(false);
                         addNewItem(img.width, img.height);
                         if (event.target && event.target.result) {
@@ -584,8 +674,28 @@ const ImageEditorPage = () => {
                     img.src = event.target.result as string;
 
                     // Start background removal process
+                    if (subscriptionStatus !== 'active' && credits <= 0) {
+                        setShowPricingDialog(true);
+                        setIsLoading(false);
+                        return;
+                    }
+
                     setIsRemovingBackground(true);
                     try {
+                        // Deduct credit if not pro
+                        if (subscriptionStatus !== 'active' && auth.currentUser) {
+                            const res = await fetch('/api/user/credits', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ uid: auth.currentUser.uid })
+                            });
+                            const data = await res.json();
+                            if (!data.success) {
+                                throw new Error(data.error || 'Insufficient credits');
+                            }
+                            setCredits(data.remainingCredits);
+                        }
+
                         const removedBackground = await removeBackground(processedBlob);
                         const url = URL.createObjectURL(removedBackground);
                         setProcessedImage(url);
@@ -644,7 +754,8 @@ const ImageEditorPage = () => {
 
     // ... rest of the code ...
 
-    const captureAndSaveImage = () => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const _captureAndSaveImage = () => {
         const canvas = canvasRef.current;
         if (canvas) {
             const dataUrl = canvas.toDataURL('image/png');
@@ -668,7 +779,8 @@ const ImageEditorPage = () => {
         setShowClearAllDialog(false);
     };
 
-    const removeImage = () => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const _removeImage = () => {
         setShowDeleteDialog(true);
 
     };
@@ -683,8 +795,36 @@ const ImageEditorPage = () => {
         setHistory([]);
         setHistoryIndex(-1);
         setLayerSettings({
-            background: { filter: 'none', intensity: 100 },
-            foreground: { filter: 'none', intensity: 100 }
+            background: {
+                filter: 'none',
+                intensity: 100,
+                saturation: 0,
+                hue: 0,
+                temperature: 0,
+                shadows: 0,
+                highlights: 0,
+                exposure: 0,
+                vignette: 0,
+                sharpen: 0,
+                noise: 0,
+                rotation: 0,
+                scale: 100
+            },
+            foreground: {
+                filter: 'none',
+                intensity: 100,
+                saturation: 0,
+                hue: 0,
+                temperature: 0,
+                shadows: 0,
+                highlights: 0,
+                exposure: 0,
+                vignette: 0,
+                sharpen: 0,
+                noise: 0,
+                rotation: 0,
+                scale: 100
+            }
         });
         setActiveImageTab('background');
         setShowDeleteDialog(false);
@@ -693,15 +833,18 @@ const ImageEditorPage = () => {
         }
     };
 
-    const handleZoomIn = () => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const _handleZoomIn = () => {
         setZoom(prevZoom => Math.min(prevZoom + 0.2, 3));
     };
 
-    const handleZoomOut = () => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const _handleZoomOut = () => {
         setZoom(prevZoom => Math.max(prevZoom - 0.2, 0.5));
     };
 
-    const applyFilter = (ctx: CanvasRenderingContext2D, filterName: string, filterValue: number) => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const _applyFilter = (ctx: CanvasRenderingContext2D, filterName: string, filterValue: number) => {
         switch (filterName) {
             case 'brightness':
                 ctx.filter = `brightness(${filterValue}%)`;
@@ -723,6 +866,108 @@ const ImageEditorPage = () => {
         }
     };
 
+    // New comprehensive filter builder
+    const buildFilterString = (settings: typeof layerSettings.background) => {
+        const filters: string[] = [];
+
+        // Basic filter (if not 'none')
+        if (settings.filter !== 'none') {
+            switch (settings.filter) {
+                case 'brightness':
+                    filters.push(`brightness(${settings.intensity}%)`);
+                    break;
+                case 'contrast':
+                    filters.push(`contrast(${settings.intensity}%)`);
+                    break;
+                case 'grayscale':
+                    filters.push(`grayscale(${settings.intensity}%)`);
+                    break;
+                case 'sepia':
+                    filters.push(`sepia(${settings.intensity}%)`);
+                    break;
+                case 'blur':
+                    filters.push(`blur(${settings.intensity / 10}px)`);
+                    break;
+            }
+        }
+
+        // Color Adjustments
+        if (settings.saturation !== 0) {
+            filters.push(`saturate(${100 + settings.saturation}%)`);
+        }
+        if (settings.hue !== 0) {
+            filters.push(`hue-rotate(${settings.hue}deg)`);
+        }
+
+        // Lighting Adjustments
+        if (settings.exposure !== 0) {
+            filters.push(`brightness(${100 + settings.exposure}%)`);
+        }
+        if (settings.highlights !== 0 || settings.shadows !== 0) {
+            // Note: CSS filters don't have direct shadows/highlights control
+            // We approximate with brightness/contrast
+            const brightnessAdjust = (settings.highlights + settings.shadows) / 2;
+            const contrastAdjust = settings.highlights - settings.shadows;
+            if (brightnessAdjust !== 0) filters.push(`brightness(${100 + brightnessAdjust}%)`);
+            if (contrastAdjust !== 0) filters.push(`contrast(${100 + contrastAdjust}%)`);
+        }
+
+        // Temperature (approximation using hue-rotate and saturation)
+        if (settings.temperature !== 0) {
+            // Warm: orange tint, Cool: blue tint
+            const tempHue = settings.temperature * 0.3; // Scale down
+            const tempSat = Math.abs(settings.temperature) * 0.2;
+            filters.push(`hue-rotate(${tempHue}deg)`);
+            filters.push(`saturate(${100 + tempSat}%)`);
+        }
+
+        // Sharpen (using contrast as approximation since CSS doesn't have direct sharpen)
+        if (settings.sharpen !== 0) {
+            filters.push(`contrast(${100 + settings.sharpen}%)`);
+        }
+
+        return filters.length > 0 ? filters.join(' ') : 'none';
+    };
+
+    // Helper to draw vignette overlay
+    const drawVignette = (ctx: CanvasRenderingContext2D, width: number, height: number, intensity: number) => {
+        if (intensity === 0) return;
+
+        const gradient = ctx.createRadialGradient(
+            width / 2, height / 2, 0,
+            width / 2, height / 2, Math.max(width, height) * 0.7
+        );
+
+        gradient.addColorStop(0, 'rgba(0, 0, 0, 0)');
+        gradient.addColorStop(1, `rgba(0, 0, 0, ${intensity / 100})`);
+
+        ctx.fillStyle = gradient;
+        ctx.fillRect(0, 0, width, height);
+    };
+
+    // Helper to draw noise overlay
+    const drawNoise = (ctx: CanvasRenderingContext2D, width: number, height: number, intensity: number) => {
+        if (intensity === 0) return;
+
+        try {
+            const imageData = ctx.getImageData(0, 0, width, height);
+            const data = imageData.data;
+            const amount = intensity * 2.55; // Scale to 0-255
+
+            for (let i = 0; i < data.length; i += 4) {
+                const noise = (Math.random() - 0.5) * amount;
+                data[i] += noise;     // R
+                data[i + 1] += noise; // G
+                data[i + 2] += noise; // B
+            }
+
+            ctx.putImageData(imageData, 0, 0);
+        } catch (e) {
+            // Silently fail if we can't access image data (CORS, etc.)
+            console.warn('Could not apply noise effect:', e);
+        }
+    };
+
     const toggleFilterSection = () => {
         setIsFilterOpen(!isFilterOpen);
     };
@@ -736,12 +981,19 @@ const ImageEditorPage = () => {
                 ctx.font = `${fontStyle} ${fontWeight} ${item.textSize * zoom}px "${item.fontFamily}"`;
                 ctx.globalAlpha = item.textOpacity;
 
-                // Apply rotation
+                // Removed blendMode application
+
+                // Apply rotation and position
                 ctx.translate(item.xPosition * zoom, item.yPosition * zoom);
                 ctx.rotate(item.rotation * Math.PI / 180);
 
                 // Apply flips
                 ctx.scale(item.flipHorizontal ? -1 : 1, item.flipVertical ? -1 : 1);
+
+                // Apply Skew
+                if (item.skewX || item.skewY) {
+                    ctx.transform(1, (item.skewY || 0) * Math.PI / 180, (item.skewX || 0) * Math.PI / 180, 1, 0, 0);
+                }
 
                 ctx.textAlign = item.textAlign;
                 ctx.textBaseline = 'middle';
@@ -754,6 +1006,7 @@ const ImageEditorPage = () => {
                     displayText = item.text.toLowerCase();
                 }
 
+                // Prepare Fill Style (Gradient or Color)
                 if (item.useGradient) {
                     const textWidth = ctx.measureText(displayText).width;
                     const textHeight = item.textSize; // Approximate height
@@ -775,37 +1028,168 @@ const ImageEditorPage = () => {
                     ctx.fillStyle = item.textColor;
                 }
 
-                ctx.fillText(displayText, 0, 0);
+                // Set Shadow & Stroke styles
+                ctx.shadowColor = item.shadowColor;
+                ctx.shadowBlur = item.shadowBlur * zoom;
+                ctx.shadowOffsetX = item.shadowOffsetX * zoom;
+                ctx.shadowOffsetY = item.shadowOffsetY * zoom;
+                ctx.lineWidth = (item.strokeWidth || 0) * zoom;
+                ctx.strokeStyle = item.strokeColor || '#000000';
+                ctx.lineJoin = 'round';
+                ctx.miterLimit = 2;
+                (ctx.canvas.style as CSSStyleDeclaration & { letterSpacing: string }).letterSpacing = `${item.letterSpacing || 0}px`;
 
-                // Draw decorations (Underline / Strikethrough)
-                if (item.isUnderline || item.isStrikethrough) {
-                    const metrics = ctx.measureText(displayText);
-                    const width = metrics.width;
-                    let xStart = 0;
 
-                    if (item.textAlign === 'center') xStart = -width / 2;
-                    else if (item.textAlign === 'right') xStart = -width;
-                    else xStart = 0;
+                // --- DRAWING HELPER ---
+                const drawTextLayer = (offsetX: number, offsetY: number, color: string | CanvasGradient, isMainLayer: boolean) => {
+                    ctx.save();
 
-                    ctx.lineWidth = Math.max(1, item.textSize / 15);
-                    ctx.strokeStyle = ctx.fillStyle; // Use same color/gradient as text
+                    // Apply global opacity only to the main layer or reduce it for shadow layers if needed
+                    // For 3D block, usually we want it solid or same opacity
 
-                    if (item.isUnderline) {
-                        ctx.beginPath();
-                        // Offset for underline (approximate based on baseline)
-                        const yOffset = item.textSize * 0.4;
-                        ctx.moveTo(xStart, yOffset);
-                        ctx.lineTo(xStart + width, yOffset);
-                        ctx.stroke();
+                    if (!isMainLayer) {
+                        // 3D Layer style
+                        ctx.fillStyle = color;
+                        // Disable shadow/stroke for extrusion layers to keep it clean
+                        ctx.shadowColor = 'transparent';
+                        ctx.shadowBlur = 0;
+                        ctx.lineWidth = 0;
+                    } else {
+                        // Main Layer style
+                        ctx.fillStyle = color;
+                        // Restore shadow/stroke
+                        ctx.shadowColor = item.shadowColor;
+                        ctx.shadowBlur = item.shadowBlur * zoom;
+                        ctx.shadowOffsetX = item.shadowOffsetX * zoom;
+                        ctx.shadowOffsetY = item.shadowOffsetY * zoom;
+                        ctx.lineWidth = (item.strokeWidth || 0) * zoom;
+                        ctx.strokeStyle = item.strokeColor || '#000000';
                     }
 
-                    if (item.isStrikethrough) {
-                        ctx.beginPath();
-                        ctx.moveTo(xStart, 0);
-                        ctx.lineTo(xStart + width, 0);
-                        ctx.stroke();
+                    if (item.curveStrength && Math.abs(item.curveStrength) > 1) {
+                        // CURVED TEXT RENDERING (True Arc)
+                        const totalAngleRad = (item.curveStrength * Math.PI) / 180;
+
+                        let totalTextWidth = 0;
+                        const charWidths: number[] = [];
+                        const spacing = item.letterSpacing || 0;
+
+                        for (let i = 0; i < displayText.length; i++) {
+                            const w = ctx.measureText(displayText[i]).width;
+                            charWidths.push(w);
+                            totalTextWidth += w;
+                            if (i < displayText.length - 1) totalTextWidth += spacing;
+                        }
+
+                        const radius = totalTextWidth / totalAngleRad;
+
+                        ctx.textAlign = 'center';
+                        let currentAngle = -totalAngleRad / 2;
+
+                        for (let i = 0; i < displayText.length; i++) {
+                            const char = displayText[i];
+                            const charWidth = charWidths[i];
+                            const charAngle = charWidth / radius;
+                            const drawAngle = currentAngle + charAngle / 2;
+
+                            ctx.save();
+                            // Apply 3D offset BEFORE rotation for straight extrusion, 
+                            // OR apply after for radial extrusion?
+                            // Standard 3D text usually extrudes in one direction (e.g. bottom-right) regardless of rotation.
+                            // So we translate by offset first? No, we are inside the context which is already translated/rotated.
+                            // We want the extrusion to be in screen space or object space?
+                            // Usually object space (relative to text).
+
+                            // For curved text, "down" changes direction.
+                            // If we want a solid block, we should probably extrude in the direction of the radius?
+                            // Or just a fixed angle relative to the canvas?
+                            // Let's stick to fixed angle relative to the text item's coordinate system for now.
+
+                            // Move to center of arc
+                            ctx.translate(0, radius);
+                            ctx.rotate(drawAngle);
+                            ctx.translate(0, -radius);
+
+                            // Apply extrusion offset here
+                            ctx.translate(offsetX, offsetY);
+
+                            if (isMainLayer && item.strokeWidth > 0) ctx.strokeText(char, 0, 0);
+                            ctx.fillText(char, 0, 0);
+
+                            ctx.restore();
+
+                            const spacingAngle = spacing / radius;
+                            currentAngle += charAngle + spacingAngle;
+                        }
+
+                    } else {
+                        // STANDARD RENDERING
+                        // Apply offset
+                        ctx.translate(offsetX, offsetY);
+
+                        if (isMainLayer && item.strokeWidth > 0) {
+                            ctx.strokeText(displayText, 0, 0);
+                        }
+                        ctx.fillText(displayText, 0, 0);
+
+                        // Decorations
+                        if (isMainLayer && (item.isUnderline || item.isStrikethrough)) {
+                            const metrics = ctx.measureText(displayText);
+                            const width = metrics.width;
+                            let xStart = 0;
+
+                            if (item.textAlign === 'center') xStart = -width / 2;
+                            else if (item.textAlign === 'right') xStart = -width;
+                            else xStart = 0;
+
+                            ctx.lineWidth = Math.max(1, item.textSize / 15);
+                            ctx.strokeStyle = ctx.fillStyle;
+                            ctx.shadowBlur = 0;
+                            ctx.shadowOffsetX = 0;
+                            ctx.shadowOffsetY = 0;
+
+                            if (item.isUnderline) {
+                                ctx.beginPath();
+                                const yOffset = item.textSize * 0.4;
+                                ctx.moveTo(xStart, yOffset);
+                                ctx.lineTo(xStart + width, yOffset);
+                                ctx.stroke();
+                            }
+
+                            if (item.isStrikethrough) {
+                                ctx.beginPath();
+                                ctx.moveTo(xStart, 0);
+                                ctx.lineTo(xStart + width, 0);
+                                ctx.stroke();
+                            }
+                        }
+                    }
+                    ctx.restore();
+                };
+
+                // --- RENDER LOOP ---
+
+                const mainFillStyle = ctx.fillStyle;
+
+                // 1. Draw Extrusion Layers (Back to Front)
+                if (item.extrusionDepth > 0) {
+                    const depth = item.extrusionDepth * zoom; // Scale depth with zoom
+                    const angleRad = (item.extrusionAngle * Math.PI) / 180;
+
+                    // Optimization: Don't draw every single pixel if depth is huge?
+                    // For now, step 1 is fine for quality.
+                    const step = 1;
+
+                    for (let i = depth; i > 0; i -= step) {
+                        const dx = i * Math.cos(angleRad);
+                        const dy = i * Math.sin(angleRad);
+                        drawTextLayer(dx, dy, item.extrusionColor || '#000000', false);
                     }
                 }
+
+                // 2. Draw Main Text Layer
+                drawTextLayer(0, 0, mainFillStyle, true);
+
                 ctx.restore();
             }
         });
@@ -857,20 +1241,58 @@ const ImageEditorPage = () => {
             ctx.translate(flipHorizontal ? canvas.width : 0, flipVertical ? canvas.height : 0);
             ctx.scale(flipHorizontal ? -1 : 1, flipVertical ? -1 : 1);
 
-            // Draw original image (Background)
+            // Draw original image (Background) with all adjustments
             ctx.save();
-            applyFilter(ctx, layerSettings.background.filter, layerSettings.background.intensity);
+
+            // Apply transform (rotation, scale)
+            const bgSettings = layerSettings.background;
+            ctx.translate(canvas.width / 2, canvas.height / 2);
+            ctx.rotate((bgSettings.rotation * Math.PI) / 180);
+            ctx.scale(bgSettings.scale / 100, bgSettings.scale / 100);
+            ctx.translate(-canvas.width / 2, -canvas.height / 2);
+
+            // Apply filters
+            ctx.filter = buildFilterString(bgSettings);
             ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            ctx.filter = 'none';
+
+            // Apply vignette
+            drawVignette(ctx, canvas.width, canvas.height, bgSettings.vignette);
+
+            // Apply noise
+            if (bgSettings.noise > 0) {
+                drawNoise(ctx, canvas.width, canvas.height, bgSettings.noise);
+            }
+
             ctx.restore();
 
             // Draw background text items
             drawText(ctx, false);
 
-            // Draw processed image (Foreground) if available
+            // Draw processed image (Foreground) if available with all adjustments
             if (processedImgRef.current) {
                 ctx.save();
-                applyFilter(ctx, layerSettings.foreground.filter, layerSettings.foreground.intensity);
+
+                // Apply transform (rotation, scale)
+                const fgSettings = layerSettings.foreground;
+                ctx.translate(canvas.width / 2, canvas.height / 2);
+                ctx.rotate((fgSettings.rotation * Math.PI) / 180);
+                ctx.scale(fgSettings.scale / 100, fgSettings.scale / 100);
+                ctx.translate(-canvas.width / 2, -canvas.height / 2);
+
+                // Apply filters
+                ctx.filter = buildFilterString(fgSettings);
                 ctx.drawImage(processedImgRef.current, 0, 0, canvas.width, canvas.height);
+                ctx.filter = 'none';
+
+                // Apply vignette
+                drawVignette(ctx, canvas.width, canvas.height, fgSettings.vignette);
+
+                // Apply noise
+                if (fgSettings.noise > 0) {
+                    drawNoise(ctx, canvas.width, canvas.height, fgSettings.noise);
+                }
+
                 ctx.restore();
             }
 
@@ -895,35 +1317,62 @@ const ImageEditorPage = () => {
                 <header className="h-16 bg-card border-b flex items-center justify-between px-4 lg:px-6 z-10">
                     <h1 className="text-lg font-semibold tracking-tight">Text Behind Image</h1>
 
-                    <div className="flex items-center space-x-3">
-                        {originalImage ? (
-                            <>
-                                <Button
-                                    variant="outline"
-                                    size="sm"
-                                    onClick={removeImage}
-                                    className="text-destructive hover:text-destructive"
-                                >
-                                    <Trash2 className="mr-2 h-4 w-4" />
-                                    Clear
-                                </Button>
-                                <Button
-                                    size="sm"
-                                    onClick={captureAndSaveImage}
-                                >
-                                    <Download className="mr-2 h-4 w-4" />
-                                    Export
-                                </Button>
-                            </>
+                    <div className="flex items-center gap-4">
+                        {/* Credits & Upgrade */}
+                        {subscriptionStatus === 'active' ? (
+                            <div className="flex items-center text-amber-500 font-medium bg-amber-500/10 px-3 py-1 rounded-full text-sm">
+                                <InfinityIcon className="w-4 h-4 mr-2" />
+                                Infinite Credits
+                            </div>
                         ) : (
-                            <Button
-                                size="sm"
-                                onClick={() => fileInputRef.current?.click()}
-                            >
-                                <Upload className="mr-2 h-4 w-4" />
-                                Upload Image
-                            </Button>
+                            <div className="flex items-center gap-3">
+                                <div className="flex items-center text-muted-foreground text-sm bg-secondary px-3 py-1 rounded-full">
+                                    <Coins className="w-4 h-4 mr-2" />
+                                    {credits} Credits
+                                </div>
+                                <Button
+                                    size="sm"
+                                    variant="default"
+                                    className="bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white border-0"
+                                    onClick={() => setShowPricingDialog(true)}
+                                >
+                                    <Crown className="w-4 h-4 mr-2" />
+                                    Upgrade
+                                </Button>
+                            </div>
                         )}
+
+                        {/* Profile & Logout */}
+                        <Popover>
+                            <PopoverTrigger asChild>
+                                <Button variant="ghost" className="relative h-8 w-8 rounded-full">
+                                    <Avatar className="h-8 w-8">
+                                        <AvatarImage src={auth.currentUser?.photoURL || ''} alt={auth.currentUser?.displayName || ''} />
+                                        <AvatarFallback>{auth.currentUser?.displayName?.charAt(0) || <UserIcon className="h-4 w-4" />}</AvatarFallback>
+                                    </Avatar>
+                                    {subscriptionStatus === 'active' && (
+                                        <div className="absolute -top-1 -right-1 bg-amber-500 text-white rounded-full p-[2px] border-2 border-background">
+                                            <Crown className="w-2 h-2 fill-current" />
+                                        </div>
+                                    )}
+                                </Button>
+                            </PopoverTrigger>
+                            <PopoverContent className="w-56" align="end" forceMount>
+                                <div className="grid gap-4">
+                                    <div className="font-medium truncate">{auth.currentUser?.displayName || auth.currentUser?.email}</div>
+                                    <Button
+                                        variant="destructive"
+                                        className="w-full justify-start"
+                                        onClick={() => {
+                                            signOut(auth).then(() => router.push('/'));
+                                        }}
+                                    >
+                                        <LogOut className="mr-2 h-4 w-4" />
+                                        Log out
+                                    </Button>
+                                </div>
+                            </PopoverContent>
+                        </Popover>
                     </div>
                 </header>
 
@@ -1013,7 +1462,7 @@ const ImageEditorPage = () => {
                     </div>
                     {/* Right Sidebar - Tabs (Text & Image) */}
                     {originalImage && (
-                        <div className="w-full lg:w-80 h-1/2 lg:h-full bg-card border-t lg:border-t-0 lg:border-l flex flex-col z-10 transition-all duration-300 ease-in-out shadow-[-4px_0_24px_rgba(0,0,0,0.02)]">
+                        <div className="w-full lg:w-96 h-1/2 lg:h-full bg-card border-t lg:border-t-0 lg:border-l flex flex-col z-10 transition-all duration-300 ease-in-out shadow-[-4px_0_24px_rgba(0,0,0,0.02)]">
                             <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col h-full">
                                 <div className="p-4 border-b">
                                     <TabsList className="w-full grid grid-cols-2 relative">
@@ -1079,7 +1528,7 @@ const ImageEditorPage = () => {
                                                 </Button>
                                             </div>
                                         ) : (
-                                            <Accordion type="single" collapsible className="w-full space-y-2">
+                                            <Accordion type="single" collapsible className="w-full space-y-2 pb-20 lg:pb-0">
                                                 {items.map((item, index) => (
                                                     <AccordionItem
                                                         key={item.id}
@@ -1124,6 +1573,133 @@ const ImageEditorPage = () => {
                                                                     className="h-8"
                                                                 />
                                                             </div>
+
+                                                            <Separator />
+
+                                                            {/* Position & Transform */}
+                                                            <div className="space-y-3">
+                                                                <Label className="text-xs">Position & Transform</Label>
+
+                                                                <div className="grid grid-cols-2 gap-2">
+                                                                    <div className="space-y-1">
+                                                                        <Label className="text-[10px] text-muted-foreground">X</Label>
+                                                                        <Slider
+                                                                            value={[item.xPosition]}
+                                                                            onValueChange={([val]) => updateItem(item.id, 'xPosition', val)}
+                                                                            max={imageWidth}
+                                                                            step={1}
+                                                                            className="py-1"
+                                                                        />
+                                                                    </div>
+                                                                    <div className="space-y-1">
+                                                                        <Label className="text-[10px] text-muted-foreground">Y</Label>
+                                                                        <Slider
+                                                                            value={[item.yPosition]}
+                                                                            onValueChange={([val]) => updateItem(item.id, 'yPosition', val)}
+                                                                            max={imageHeight}
+                                                                            step={1}
+                                                                            className="py-1"
+                                                                        />
+                                                                    </div>
+                                                                </div>
+
+                                                                <div className="space-y-1">
+                                                                    <div className="flex justify-between">
+                                                                        <Label className="text-[10px] text-muted-foreground">Rotation</Label>
+                                                                        <span className="text-[10px] text-muted-foreground">{item.rotation}°</span>
+                                                                    </div>
+                                                                    <Slider
+                                                                        value={[item.rotation]}
+                                                                        onValueChange={([val]) => rotateText(item.id, val - item.rotation)}
+                                                                        max={360}
+                                                                        step={1}
+                                                                    />
+                                                                </div>
+
+                                                                {/* Curve & Skew */}
+                                                                <div className="grid grid-cols-2 gap-2 pt-1">
+                                                                    <div className="space-y-1 col-span-2">
+                                                                        <div className="flex justify-between">
+                                                                            <Label className="text-[10px] text-muted-foreground">Curve Strength</Label>
+                                                                            <span className="text-[10px] text-muted-foreground">{item.curveStrength || 0}</span>
+                                                                        </div>
+                                                                        <Slider
+                                                                            value={[item.curveStrength || 0]}
+                                                                            onValueChange={([val]) => updateItem(item.id, 'curveStrength', val)}
+                                                                            min={-360}
+                                                                            max={360}
+                                                                            step={1}
+                                                                        />
+                                                                    </div>
+                                                                    <div className="space-y-1">
+                                                                        <Label className="text-[10px] text-muted-foreground">Skew X</Label>
+                                                                        <Slider
+                                                                            value={[item.skewX || 0]}
+                                                                            onValueChange={([val]) => updateItem(item.id, 'skewX', val)}
+                                                                            min={-45}
+                                                                            max={45}
+                                                                            step={1}
+                                                                        />
+                                                                    </div>
+                                                                    <div className="space-y-1">
+                                                                        <Label className="text-[10px] text-muted-foreground">Skew Y</Label>
+                                                                        <Slider
+                                                                            value={[item.skewY || 0]}
+                                                                            onValueChange={([val]) => updateItem(item.id, 'skewY', val)}
+                                                                            min={-45}
+                                                                            max={45}
+                                                                            step={1}
+                                                                        />
+                                                                    </div>
+                                                                </div>
+
+                                                                <div className="space-y-1">
+                                                                    <div className="flex justify-between">
+                                                                        <Label className="text-[10px] text-muted-foreground">Opacity</Label>
+                                                                        <span className="text-[10px] text-muted-foreground">{Math.round(item.textOpacity * 100)}%</span>
+                                                                    </div>
+                                                                    <Slider
+                                                                        value={[item.textOpacity]}
+                                                                        onValueChange={([val]) => updateItem(item.id, 'textOpacity', val)}
+                                                                        max={1}
+                                                                        step={0.01}
+                                                                    />
+                                                                </div>
+
+                                                                <div className="grid grid-cols-2 gap-2 pt-1">
+                                                                    <Button
+                                                                        variant={item.flipHorizontal ? "secondary" : "outline"}
+                                                                        size="sm"
+                                                                        className="h-8 w-full"
+                                                                        onClick={() => toggleFlipHorizontalText(item.id)}
+                                                                        title="Flip Horizontal"
+                                                                    >
+                                                                        <FlipHorizontal className="h-4 w-4 mr-2" /> Flip H
+                                                                    </Button>
+                                                                    <Button
+                                                                        variant={item.flipVertical ? "secondary" : "outline"}
+                                                                        size="sm"
+                                                                        className="h-8 w-full"
+                                                                        onClick={() => toggleFlipVerticalText(item.id)}
+                                                                        title="Flip Vertical"
+                                                                    >
+                                                                        <FlipVertical className="h-4 w-4 mr-2" /> Flip V
+                                                                    </Button>
+                                                                </div>
+
+                                                                {/* Layer Options */}
+                                                                <div className="space-y-2 pt-2">
+                                                                    <div className="flex items-center justify-between">
+                                                                        <Label className="text-xs">Foreground Layer</Label>
+                                                                        <Switch
+                                                                            checked={item.isForeground}
+                                                                            onCheckedChange={() => toggleForeground(item.id)}
+                                                                        />
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+
+                                                            <Separator />
 
                                                             {/* Font & Style */}
                                                             <div className="space-y-2">
@@ -1229,8 +1805,24 @@ const ImageEditorPage = () => {
                                                                             </div>
                                                                         </div>
                                                                     </div>
+                                                                    <div className="space-y-1 col-span-2">
+                                                                        <div className="flex items-center justify-between">
+                                                                            <Label className="text-[10px] text-muted-foreground">Letter Spacing</Label>
+                                                                            <span className="text-[10px] text-muted-foreground">{item.letterSpacing}px</span>
+                                                                        </div>
+                                                                        <Slider
+                                                                            value={[item.letterSpacing]}
+                                                                            min={-10}
+                                                                            max={50}
+                                                                            step={1}
+                                                                            onValueChange={(val) => updateItem(item.id, 'letterSpacing', val[0])}
+                                                                            className="flex-1"
+                                                                        />
+                                                                    </div>
                                                                 </div>
                                                             </div>
+
+                                                            <Separator />
 
                                                             {/* Color */}
                                                             <div className="space-y-3">
@@ -1242,41 +1834,30 @@ const ImageEditorPage = () => {
                                                                 <div className="flex items-center gap-3">
                                                                     {/* Custom Picker */}
                                                                     <div className="relative group shrink-0">
-                                                                        <div
-                                                                            className="h-9 w-9 rounded-full border-2 border-muted hover:border-primary transition-all cursor-pointer overflow-hidden shadow-sm flex items-center justify-center bg-gradient-to-br from-gray-100 to-gray-200 dark:from-gray-800 dark:to-gray-900"
-                                                                            title="Pick Custom Color"
-                                                                        >
+                                                                        <Label className="sr-only">Text Color</Label>
+                                                                        <div className="w-8 h-8 rounded-full border shadow-sm overflow-hidden cursor-pointer relative">
+                                                                            <input
+                                                                                type="color"
+                                                                                value={item.textColor}
+                                                                                onChange={(e) => updateItem(item.id, 'textColor', e.target.value)}
+                                                                                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                                                                            />
                                                                             <div
-                                                                                className="h-full w-full rounded-full border-[3px] border-background shadow-inner"
+                                                                                className="w-full h-full"
                                                                                 style={{ backgroundColor: item.textColor }}
                                                                             />
-                                                                            <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/20 rounded-full">
-                                                                                <Palette className="h-4 w-4 text-white drop-shadow-md" />
-                                                                            </div>
                                                                         </div>
-                                                                        <Input
-                                                                            type="color"
-                                                                            value={item.textColor}
-                                                                            onChange={(e) => updateItem(item.id, 'textColor', e.target.value)}
-                                                                            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer p-0 border-0"
-                                                                        />
                                                                     </div>
 
-                                                                    <div className="w-px h-8 bg-border" />
-
-                                                                    {/* Dominant Colors */}
-                                                                    <div className="flex flex-wrap gap-2">
-                                                                        {dominantColors.slice(0, 7).map((color) => (
+                                                                    {/* Preset Colors */}
+                                                                    <div className="flex flex-wrap gap-1.5">
+                                                                        {['#ffffff', '#000000', '#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#ec4899'].map((color) => (
                                                                             <button
                                                                                 key={color}
-                                                                                className={`h-8 w-8 rounded-full border shadow-sm transition-all hover:scale-110 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 ${item.textColor === color
-                                                                                    ? 'ring-2 ring-primary ring-offset-2 border-transparent scale-105'
-                                                                                    : 'border-border hover:border-primary/50'
-                                                                                    }`}
+                                                                                className={`w-6 h-6 rounded-full border shadow-sm transition-transform hover:scale-110 focus:outline-none focus:ring-2 focus:ring-ring ${item.textColor === color ? 'ring-2 ring-ring scale-110' : ''}`}
                                                                                 style={{ backgroundColor: color }}
                                                                                 onClick={() => updateItem(item.id, 'textColor', color)}
                                                                                 title={color}
-                                                                                type="button"
                                                                             />
                                                                         ))}
                                                                     </div>
@@ -1344,95 +1925,210 @@ const ImageEditorPage = () => {
 
                                                             <Separator />
 
-                                                            {/* Position & Transform */}
+                                                            {/* Effects */}
                                                             <div className="space-y-3">
-                                                                <Label className="text-xs">Position & Transform</Label>
+                                                                <Label className="text-xs">Effects</Label>
 
-                                                                <div className="grid grid-cols-2 gap-2">
-                                                                    <div className="space-y-1">
-                                                                        <Label className="text-[10px] text-muted-foreground">X</Label>
-                                                                        <Slider
-                                                                            value={[item.xPosition]}
-                                                                            onValueChange={([val]) => updateItem(item.id, 'xPosition', val)}
-                                                                            max={imageWidth}
-                                                                            step={1}
-                                                                            className="py-1"
-                                                                        />
+                                                                {/* Shadow Control */}
+                                                                <div className="space-y-3 border rounded-md p-3 bg-muted/20">
+                                                                    <div className="flex items-center justify-between">
+                                                                        <div className="flex items-center space-x-2">
+                                                                            <Switch
+                                                                                id={`shadow-${item.id}`}
+                                                                                checked={item.shadowBlur > 0 || item.shadowOffsetX !== 0 || item.shadowOffsetY !== 0}
+                                                                                onCheckedChange={(checked) => {
+                                                                                    if (checked) {
+                                                                                        updateItem(item.id, 'shadowBlur', 10);
+                                                                                        updateItem(item.id, 'shadowOffsetX', 5);
+                                                                                        updateItem(item.id, 'shadowOffsetY', 5);
+                                                                                    } else {
+                                                                                        updateItem(item.id, 'shadowBlur', 0);
+                                                                                        updateItem(item.id, 'shadowOffsetX', 0);
+                                                                                        updateItem(item.id, 'shadowOffsetY', 0);
+                                                                                    }
+                                                                                }}
+                                                                            />
+                                                                            <Label htmlFor={`shadow-${item.id}`} className="text-xs font-medium">Drop Shadow</Label>
+                                                                        </div>
                                                                     </div>
-                                                                    <div className="space-y-1">
-                                                                        <Label className="text-[10px] text-muted-foreground">Y</Label>
-                                                                        <Slider
-                                                                            value={[item.yPosition]}
-                                                                            onValueChange={([val]) => updateItem(item.id, 'yPosition', val)}
-                                                                            max={imageHeight}
-                                                                            step={1}
-                                                                            className="py-1"
-                                                                        />
-                                                                    </div>
+
+                                                                    {(item.shadowBlur > 0 || item.shadowOffsetX !== 0 || item.shadowOffsetY !== 0) && (
+                                                                        <div className="space-y-3 pt-2 animate-in slide-in-from-top-2 fade-in duration-200">
+                                                                            <div className="space-y-1">
+                                                                                <Label className="text-[10px] text-muted-foreground">Color</Label>
+                                                                                <div className="flex items-center space-x-2">
+                                                                                    <div className="h-6 w-full rounded-md border overflow-hidden relative">
+                                                                                        <input
+                                                                                            type="color"
+                                                                                            value={item.shadowColor}
+                                                                                            onChange={(e) => updateItem(item.id, 'shadowColor', e.target.value)}
+                                                                                            className="absolute -top-2 -left-2 w-[150%] h-[150%] cursor-pointer p-0 border-0"
+                                                                                        />
+                                                                                    </div>
+                                                                                </div>
+                                                                            </div>
+                                                                            <div className="space-y-1">
+                                                                                <div className="flex justify-between">
+                                                                                    <Label className="text-[10px] text-muted-foreground">Blur</Label>
+                                                                                    <span className="text-[10px] text-muted-foreground">{item.shadowBlur}px</span>
+                                                                                </div>
+                                                                                <Slider
+                                                                                    value={[item.shadowBlur]}
+                                                                                    onValueChange={([val]) => updateItem(item.id, 'shadowBlur', val)}
+                                                                                    max={200}
+                                                                                    step={1}
+                                                                                />
+                                                                            </div>
+                                                                            <div className="grid grid-cols-2 gap-2">
+                                                                                <div className="space-y-1">
+                                                                                    <Label className="text-[10px] text-muted-foreground">Offset X</Label>
+                                                                                    <Slider
+                                                                                        value={[item.shadowOffsetX]}
+                                                                                        onValueChange={([val]) => updateItem(item.id, 'shadowOffsetX', val)}
+                                                                                        min={-50}
+                                                                                        max={50}
+                                                                                        step={1}
+                                                                                    />
+                                                                                </div>
+                                                                                <div className="space-y-1">
+                                                                                    <Label className="text-[10px] text-muted-foreground">Offset Y</Label>
+                                                                                    <Slider
+                                                                                        value={[item.shadowOffsetY]}
+                                                                                        onValueChange={([val]) => updateItem(item.id, 'shadowOffsetY', val)}
+                                                                                        min={-50}
+                                                                                        max={50}
+                                                                                        step={1}
+                                                                                    />
+                                                                                </div>
+                                                                            </div>
+                                                                        </div>
+                                                                    )}
                                                                 </div>
 
-                                                                <div className="space-y-1">
-                                                                    <div className="flex justify-between">
-                                                                        <Label className="text-[10px] text-muted-foreground">Rotation</Label>
-                                                                        <span className="text-[10px] text-muted-foreground">{item.rotation}°</span>
+                                                                {/* Stroke Control */}
+                                                                <div className="space-y-3 border rounded-md p-3 bg-muted/20">
+                                                                    <div className="flex items-center justify-between">
+                                                                        <div className="flex items-center space-x-2">
+                                                                            <Switch
+                                                                                id={`stroke-${item.id}`}
+                                                                                checked={item.strokeWidth > 0}
+                                                                                onCheckedChange={(checked) => {
+                                                                                    updateItem(item.id, 'strokeWidth', checked ? 2 : 0);
+                                                                                }}
+                                                                            />
+                                                                            <Label htmlFor={`stroke-${item.id}`} className="text-xs font-medium">Outline (Stroke)</Label>
+                                                                        </div>
                                                                     </div>
-                                                                    <Slider
-                                                                        value={[item.rotation]}
-                                                                        onValueChange={([val]) => rotateText(item.id, val - item.rotation)}
-                                                                        max={360}
-                                                                        step={1}
-                                                                    />
-                                                                </div>
 
-                                                                <div className="space-y-1">
-                                                                    <div className="flex justify-between">
-                                                                        <Label className="text-[10px] text-muted-foreground">Opacity</Label>
-                                                                        <span className="text-[10px] text-muted-foreground">{Math.round(item.textOpacity * 100)}%</span>
-                                                                    </div>
-                                                                    <Slider
-                                                                        value={[item.textOpacity]}
-                                                                        onValueChange={([val]) => updateItem(item.id, 'textOpacity', val)}
-                                                                        max={1}
-                                                                        step={0.01}
-                                                                    />
+                                                                    {item.strokeWidth > 0 && (
+                                                                        <div className="space-y-3 pt-2 animate-in slide-in-from-top-2 fade-in duration-200">
+                                                                            <div className="space-y-1">
+                                                                                <Label className="text-[10px] text-muted-foreground">Color</Label>
+                                                                                <div className="flex items-center space-x-2">
+                                                                                    <div className="h-6 w-full rounded-md border overflow-hidden relative">
+                                                                                        <input
+                                                                                            type="color"
+                                                                                            value={item.strokeColor}
+                                                                                            onChange={(e) => updateItem(item.id, 'strokeColor', e.target.value)}
+                                                                                            className="absolute -top-2 -left-2 w-[150%] h-[150%] cursor-pointer p-0 border-0"
+                                                                                        />
+                                                                                    </div>
+                                                                                </div>
+                                                                            </div>
+                                                                            <div className="space-y-1">
+                                                                                <div className="flex justify-between">
+                                                                                    <Label className="text-[10px] text-muted-foreground">Width</Label>
+                                                                                    <span className="text-[10px] text-muted-foreground">{item.strokeWidth}px</span>
+                                                                                </div>
+                                                                                <Slider
+                                                                                    value={[item.strokeWidth]}
+                                                                                    onValueChange={([val]) => updateItem(item.id, 'strokeWidth', val)}
+                                                                                    min={1}
+                                                                                    max={100}
+                                                                                    step={1}
+                                                                                />
+                                                                            </div>
+                                                                        </div>
+                                                                    )}
                                                                 </div>
                                                             </div>
 
                                                             <Separator />
 
-                                                            {/* Options */}
-                                                            <div className="space-y-2">
+                                                            {/* 3D Effect */}
+                                                            <div className="space-y-3 border rounded-md p-3 bg-muted/20">
                                                                 <div className="flex items-center justify-between">
-                                                                    <Label className="text-xs">Foreground Layer</Label>
-                                                                    <Switch
-                                                                        checked={item.isForeground}
-                                                                        onCheckedChange={() => toggleForeground(item.id)}
-                                                                    />
-                                                                </div>
-                                                                <div className="space-y-2">
-                                                                    <Label className="text-xs font-medium">Transform</Label>
-                                                                    <div className="flex items-center gap-3">
-                                                                        <Button
-                                                                            variant={item.flipHorizontal ? "secondary" : "outline"}
-                                                                            size="icon"
-                                                                            className="h-10 w-10 flex-1"
-                                                                            onClick={() => toggleFlipHorizontalText(item.id)}
-                                                                            title="Flip Horizontal"
-                                                                        >
-                                                                            <FlipHorizontal className="h-5 w-5" />
-                                                                        </Button>
-                                                                        <Button
-                                                                            variant={item.flipVertical ? "secondary" : "outline"}
-                                                                            size="icon"
-                                                                            className="h-10 w-10 flex-1"
-                                                                            onClick={() => toggleFlipVerticalText(item.id)}
-                                                                            title="Flip Vertical"
-                                                                        >
-                                                                            <FlipVertical className="h-5 w-5" />
-                                                                        </Button>
+                                                                    <div className="flex items-center space-x-2">
+                                                                        <Switch
+                                                                            id={`extrusion-${item.id}`}
+                                                                            checked={(item.extrusionDepth || 0) > 0}
+                                                                            onCheckedChange={(checked) => updateItem(item.id, 'extrusionDepth', checked ? 10 : 0)}
+                                                                        />
+                                                                        <Label htmlFor={`extrusion-${item.id}`} className="text-xs font-medium">3D Effect</Label>
                                                                     </div>
                                                                 </div>
 
+                                                                {(item.extrusionDepth || 0) > 0 && (
+                                                                    <div className="space-y-3 pt-1 animate-in slide-in-from-top-2 fade-in duration-200">
+                                                                        <div className="space-y-1">
+                                                                            <div className="flex justify-between">
+                                                                                <Label className="text-[10px] text-muted-foreground">Depth</Label>
+                                                                                <span className="text-[10px] text-muted-foreground">{Math.round(item.extrusionDepth)}</span>
+                                                                            </div>
+                                                                            <Slider
+                                                                                value={[item.extrusionDepth || 0]}
+                                                                                onValueChange={([val]) => updateItem(item.id, 'extrusionDepth', val)}
+                                                                                min={0}
+                                                                                max={50}
+                                                                                step={1}
+                                                                            />
+                                                                        </div>
+
+                                                                        <div className="space-y-1">
+                                                                            <div className="flex justify-between">
+                                                                                <Label className="text-[10px] text-muted-foreground">Direction</Label>
+                                                                                <span className="text-[10px] text-muted-foreground">{Math.round(item.extrusionAngle || 45)}°</span>
+                                                                            </div>
+                                                                            <Slider
+                                                                                value={[item.extrusionAngle || 45]}
+                                                                                onValueChange={([val]) => updateItem(item.id, 'extrusionAngle', val)}
+                                                                                min={0}
+                                                                                max={360}
+                                                                                step={1}
+                                                                            />
+                                                                        </div>
+
+                                                                        <div className="space-y-1">
+                                                                            <Label className="text-[10px] text-muted-foreground">Color</Label>
+                                                                            <div className="flex items-center gap-2">
+                                                                                <div className="relative w-full h-8 rounded-md border shadow-sm overflow-hidden cursor-pointer">
+                                                                                    <input
+                                                                                        type="color"
+                                                                                        value={item.extrusionColor || '#000000'}
+                                                                                        onChange={(e) => updateItem(item.id, 'extrusionColor', e.target.value)}
+                                                                                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                                                                                    />
+                                                                                    <div
+                                                                                        className="w-full h-full flex items-center justify-center text-[10px] font-mono pointer-events-none"
+                                                                                        style={{
+                                                                                            backgroundColor: item.extrusionColor || '#000000',
+                                                                                            color: (() => {
+                                                                                                const hex = item.extrusionColor || '#000000';
+                                                                                                const r = parseInt(hex.slice(1, 3), 16);
+                                                                                                const g = parseInt(hex.slice(3, 5), 16);
+                                                                                                const b = parseInt(hex.slice(5, 7), 16);
+                                                                                                const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+                                                                                                return luminance > 0.5 ? '#000000' : '#ffffff';
+                                                                                            })()
+                                                                                        }}
+                                                                                    >
+                                                                                        {item.extrusionColor || '#000000'}
+                                                                                    </div>
+                                                                                </div>
+                                                                            </div>
+                                                                        </div>
+                                                                    </div>
+                                                                )}
                                                             </div>
 
                                                         </AccordionContent>
@@ -1487,7 +2183,7 @@ const ImageEditorPage = () => {
                                     </div>
 
                                     <ScrollArea className="flex-1 p-4">
-                                        <div className="space-y-6">
+                                        <div className="space-y-6 pb-20 lg:pb-0">
                                             {/* Filter Controls */}
                                             <div className="space-y-4">
                                                 <div className="flex items-center justify-between">
@@ -1623,6 +2319,11 @@ const ImageEditorPage = () => {
                     </AlertDialogFooter>
                 </AlertDialogContent>
             </AlertDialog>
+            <PricingDialog
+                open={showPricingDialog}
+                onOpenChange={setShowPricingDialog}
+                uid={auth.currentUser?.uid}
+            />
         </div>
     );
 };
