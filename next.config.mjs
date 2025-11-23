@@ -11,8 +11,8 @@ const nextConfig = {
       },
     ],
   },
-  // Add this line:
-  experimental: { images: { allowFutureImage: true } },
+  // Explicitly mark firebase-admin as server-only to prevent client bundling
+  serverComponentsExternalPackages: ['firebase-admin'],
 }
 
 // Add this at the end of the file
