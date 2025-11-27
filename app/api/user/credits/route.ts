@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { db } from '@/lib/firebase-admin';
+import { dodo } from '@/lib/dodo';
 
 export async function GET(req: Request) {
     const { searchParams } = new URL(req.url);
@@ -24,9 +25,36 @@ export async function GET(req: Request) {
         }
 
         const data = doc.data();
+        let dodoCustomerId = data?.dodoCustomerId;
+        const dodoSubscriptionId = data?.dodoSubscriptionId;
+        const subscriptionStatus = data?.subscriptionStatus ?? 'free';
+
+        // Self-healing: If active but missing customer ID, try to fetch it
+        if (subscriptionStatus === 'active' && !dodoCustomerId && dodoSubscriptionId) {
+            try {
+                console.log(`Attempting to backfill customerId for user ${uid}`);
+
+                const sub: any = await dodo.subscriptions.retrieve(dodoSubscriptionId); // eslint-disable-line @typescript-eslint/no-explicit-any
+                const fetchedCustomerId = sub.customer_id || sub.customer?.id;
+
+                if (fetchedCustomerId) {
+                    dodoCustomerId = fetchedCustomerId;
+                    await userRef.update({ dodoCustomerId: fetchedCustomerId });
+                    console.log(`Successfully backfilled customerId: ${fetchedCustomerId}`);
+                }
+            } catch (error) {
+                console.error('Error backfilling customerId:', error);
+            }
+        }
+
         return NextResponse.json({
             credits: data?.credits ?? 0,
-            subscriptionStatus: data?.subscriptionStatus ?? 'free'
+            subscriptionStatus: subscriptionStatus,
+            dodoCustomerId: dodoCustomerId,
+            dodoSubscriptionId: dodoSubscriptionId,
+            subscriptionInterval: data?.subscriptionInterval,
+            subscriptionCancellationPending: data?.subscriptionCancellationPending ?? false,
+            subscriptionAccessExpiresAt: data?.subscriptionAccessExpiresAt ?? null,
         });
     } catch (error) {
         console.error('Error fetching credits:', error);

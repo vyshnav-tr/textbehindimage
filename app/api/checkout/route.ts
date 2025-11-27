@@ -23,13 +23,14 @@ export async function POST(req: Request) {
                 email: email,
                 name: name || 'User',
             },
+            allowed_payment_method_types: ['credit', 'debit'],
             return_url: `${process.env.NEXT_PUBLIC_APP_URL}/editor?success=true`,
             metadata: {
                 firebaseUid: uid,
             },
         });
 
-        return NextResponse.json({ url: session.checkout_url });
+        return NextResponse.json({ url: (session as any).checkout_url || (session as any).link }); // eslint-disable-line @typescript-eslint/no-explicit-any
     } catch (error) {
         console.error('Error creating checkout session:', error);
         return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });

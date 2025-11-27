@@ -1,35 +1,60 @@
+
 "use client";
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import Image from 'next/image';
 import { useRouter } from 'next/navigation';
-import { Separator } from '@/components/ui/separator';
-import { useEffect, useState } from 'react';
 import { auth } from '@/app/firebase';
 import { User } from 'firebase/auth';
 import { Avatar, AvatarImage, AvatarFallback } from '@/components/ui/avatar';
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
-
+import { ArrowRight, Check, Layers, Zap, Download, Menu, X } from 'lucide-react';
+import Link from 'next/link';
+import { logAnalyticsEvent } from "@/app/utils/analytics";
+import { Spotlight } from '@/components/ui/spotlight';
+import { BentoGrid, BentoGridItem } from '@/components/ui/bento-grid';
+import { StickyScroll } from '@/components/ui/sticky-scroll-reveal';
+import { ParallaxScroll } from '@/components/ui/parallax-scroll';
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion";
 
 const LandingPage = () => {
   const router = useRouter();
-  const images = [
-    '/images/life.webp',
-    '/images/confident.webp',
-  ];
   const [user, setUser] = useState<User | null>(null);
   const [isPopoverOpen, setIsPopoverOpen] = useState(false);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [subscriptionStatus, setSubscriptionStatus] = useState<string>('free');
+  const [dodoCustomerId, setDodoCustomerId] = useState<string | undefined>(undefined);
+  const [dodoSubscriptionId, setDodoSubscriptionId] = useState<string | undefined>(undefined);
+  const [subscriptionInterval, setSubscriptionInterval] = useState<string | undefined>(undefined);
+  const [loading, setLoading] = useState<'monthly' | 'yearly' | 'portal' | null>(null);
 
-  const handleAvatarClick = () => {
-    setIsPopoverOpen(!isPopoverOpen);
-  };
+  useEffect(() => {
+    logAnalyticsEvent('page_view', { page_title: 'Landing Page' });
+  }, []);
+
   useEffect(() => {
     const unsubscribe = auth.onAuthStateChanged((user) => {
       setUser(user);
+      if (user) {
+        fetch(`/api/user/credits?uid=${user.uid}`)
+          .then(res => res.json())
+          .then(data => {
+            console.log('Landing Page Subscription Data:', data);
+            setSubscriptionStatus(data.subscriptionStatus);
+            setDodoCustomerId(data.dodoCustomerId);
+            setDodoSubscriptionId(data.dodoSubscriptionId);
+            setSubscriptionInterval(data.subscriptionInterval);
+          })
+          .catch(console.error);
+      }
     });
-
     return () => unsubscribe();
   }, []);
 
@@ -42,6 +67,7 @@ const LandingPage = () => {
   };
 
   const handleGetStarted = () => {
+    logAnalyticsEvent('click_get_started');
     if (user) {
       router.push('/editor');
     } else {
@@ -49,307 +75,616 @@ const LandingPage = () => {
     }
   };
 
-  return (
-    <div className="container mx-auto px-4 py-4 sm:py-8">
-      {/* App Bar */}
-      <div className="bg-white text-white p-4 flex justify-between items-center">
-        <h1 className="text-lg sm:text-xl font-bold text-black">Text Inside Image</h1>
-        {user ? (
-          <div className="flex items-center">
-            <span className="text-black mr-4">Welcome, {user.displayName}</span>
-            <Popover open={isPopoverOpen} onOpenChange={setIsPopoverOpen}>
-              <PopoverTrigger asChild>
-                <Avatar className="w-8 h-8 mr-2 cursor-pointer" onClick={handleAvatarClick}>
-                  <AvatarImage src={user.photoURL || undefined} alt={user.displayName || 'User'} />
-                  <AvatarFallback>{user.displayName ? user.displayName[0] : 'U'}</AvatarFallback>
-                </Avatar>
-              </PopoverTrigger>
-              <PopoverContent className="p-2">
-                <button
-                  className="w-full text-left px-2 py-1 hover:bg-gray-100 rounded"
-                  onClick={handleLogout}
-                >
-                  Logout
-                </button>
-              </PopoverContent>
-            </Popover>
+  const handlePortal = async () => {
+    logAnalyticsEvent('manage_subscription');
+    console.log('handlePortal called', { dodoCustomerId, dodoSubscriptionId, uid: user?.uid });
 
+    // Ensure user is logged in
+    if (!user) {
+      router.push('/login');
+      return;
+    }
+
+    setLoading('portal');
+    try {
+      // Allow server to resolve customerId from uid or subscription if missing
+      const payload: Record<string, unknown> = {};
+      if (dodoCustomerId) payload.customerId = dodoCustomerId;
+      if (dodoSubscriptionId) payload.subscriptionId = dodoSubscriptionId;
+      if (user?.uid) payload.uid = user.uid;
+
+      const response = await fetch('/api/portal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...payload,
+          email: user.email || undefined,
+        }),
+      });
+
+      const data = await response.json();
+      console.log('Portal API response:', data);
+
+      if (!response.ok) {
+        throw new Error(data?.error || 'Failed to open billing portal');
+      }
+
+      if (data.url) {
+        window.location.href = data.url;
+      } else {
+        console.error('No URL in portal response');
+        alert('Could not open billing portal. Please try again.');
+      }
+    } catch (error) {
+      console.error('Error opening portal:', error);
+      alert(error instanceof Error ? error.message : 'Error opening portal');
+    } finally {
+      setLoading(null);
+    }
+  };
+
+
+  const handleCheckout = async (interval: 'monthly' | 'yearly') => {
+    if (!user) {
+      router.push('/login');
+      return;
+    }
+
+    logAnalyticsEvent('begin_checkout', { plan: interval });
+    setLoading(interval === 'monthly' ? 'monthly' : 'yearly');
+    try {
+      const response = await fetch('/api/checkout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          productId: interval === 'monthly' ? process.env.NEXT_PUBLIC_DODO_PRODUCT_MONTHLY : process.env.NEXT_PUBLIC_DODO_PRODUCT_YEARLY,
+          uid: user.uid,
+          email: user.email,
+          name: user.displayName
+        }),
+      });
+
+      const data = await response.json();
+      if (data.url) {
+        window.location.href = data.url;
+      }
+    } catch (error) {
+      console.error('Error creating checkout session:', error);
+    } finally {
+      setLoading(null);
+    }
+  };
+
+
+
+  const steps = [
+    {
+      num: "01",
+      title: "Upload Image",
+      desc: "Choose any photo from your gallery."
+    },
+    {
+      num: "02",
+      title: "Add Text",
+      desc: "Type your message and customize fonts."
+    },
+    {
+      num: "03",
+      title: "Auto-Magic",
+      desc: "Our AI places text behind the subject instantly."
+    }
+  ];
+
+  return (
+    <div className="min-h-screen bg-white text-black font-sans selection:bg-black selection:text-white overflow-x-hidden">
+
+      {/* Navbar */}
+      <nav className="fixed top-0 left-0 right-0 z-50 bg-white/70 backdrop-blur-xl border-b border-black/5 supports-[backdrop-filter]:bg-white/60">
+        <div className="container mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex justify-between items-center h-20">
+            <div className="flex items-center">
+              <Link href="/" className="flex items-center gap-2 group">
+                <div className="relative">
+                  <div className="absolute -inset-1 bg-gradient-to-r from-gray-200 to-gray-100 rounded-lg blur opacity-25 group-hover:opacity-75 transition duration-200" />
+                  <Image src="/images/wordmark.png" alt="TextBehindImage" width={150} height={30} className="h-8 w-auto object-contain relative" />
+                </div>
+              </Link>
+            </div>
+
+            {/* Desktop Menu */}
+            <div className="hidden md:flex items-center space-x-8">
+              <Link href="#features" className="text-sm font-medium text-gray-600 hover:text-black transition-colors relative group">
+                Features
+                <span className="absolute -bottom-1 left-0 w-0 h-0.5 bg-black transition-all group-hover:w-full" />
+              </Link>
+              <Link href="#how-it-works" className="text-sm font-medium text-gray-600 hover:text-black transition-colors relative group">
+                How it Works
+                <span className="absolute -bottom-1 left-0 w-0 h-0.5 bg-black transition-all group-hover:w-full" />
+              </Link>
+              <Link href="#pricing" className="text-sm font-medium text-gray-600 hover:text-black transition-colors relative group">
+                Pricing
+                <span className="absolute -bottom-1 left-0 w-0 h-0.5 bg-black transition-all group-hover:w-full" />
+              </Link>
+
+              {user ? (
+                <div className="flex items-center gap-4 pl-4 border-l border-gray-200">
+                  <span className="text-sm font-medium text-gray-900">Hi, {user.displayName?.split(' ')[0]}</span>
+                  <Popover open={isPopoverOpen} onOpenChange={setIsPopoverOpen}>
+                    <PopoverTrigger asChild>
+                      <Avatar className="w-10 h-10 cursor-pointer border-2 border-white shadow-sm hover:shadow-md transition-all ring-1 ring-gray-100">
+                        <AvatarImage src={user.photoURL || undefined} />
+                        <AvatarFallback className="bg-black text-white">{user.displayName?.[0] || 'U'}</AvatarFallback>
+                      </Avatar>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-56 p-2 bg-white border border-gray-100 shadow-xl rounded-xl" align="end">
+                      <div className="px-3 py-2 border-b border-gray-100 mb-2">
+                        <p className="text-sm font-medium text-gray-900">{user.displayName}</p>
+                        <p className="text-xs text-gray-500 truncate">{user.email}</p>
+                      </div>
+                      <button
+                        className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 rounded-lg transition-colors text-red-600 font-medium flex items-center gap-2"
+                        onClick={handleLogout}
+                      >
+                        Log out
+                      </button>
+                    </PopoverContent>
+                  </Popover>
+                  <Button onClick={() => router.push('/editor')} className="bg-black text-white hover:bg-gray-800 rounded-full px-6 shadow-lg shadow-black/20 hover:shadow-xl hover:shadow-black/30 transition-all">
+                    Dashboard
+                  </Button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-4 pl-4 border-l border-gray-200">
+                  <Link href="/login" className="text-sm font-medium text-gray-600 hover:text-black transition-colors">Log in</Link>
+                  <Button onClick={() => router.push('/signup')} className="bg-black text-white hover:bg-gray-800 rounded-full px-6 shadow-lg shadow-black/20 hover:shadow-xl hover:shadow-black/30 transition-all">
+                    Sign up free
+                  </Button>
+                </div>
+              )}
+            </div>
+
+            {/* Mobile Menu Button */}
+            <div className="md:hidden">
+              <button onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)} className="p-2 text-gray-900 hover:bg-gray-100 rounded-full transition-colors">
+                {isMobileMenuOpen ? <X /> : <Menu />}
+              </button>
+            </div>
           </div>
-        ) : (
-          <div className="flex items-center">
-            <Button variant="ghost" className="text-black hover:bg-gray-100 mr-2" onClick={() => router.push('/login')}>
-              Log in
-            </Button>
-            <Button className="bg-black text-white hover:bg-gray-800" onClick={() => router.push('/signup')}>
-              Sign up
-            </Button>
+        </div>
+
+        {/* Mobile Menu */}
+        {isMobileMenuOpen && (
+          <div className="md:hidden bg-white/95 backdrop-blur-xl border-b border-gray-200 p-6 absolute w-full text-gray-900 shadow-2xl">
+            <div className="flex flex-col space-y-6">
+              <Link href="#features" className="text-lg font-medium" onClick={() => setIsMobileMenuOpen(false)}>Features</Link>
+              <Link href="#how-it-works" className="text-lg font-medium" onClick={() => setIsMobileMenuOpen(false)}>How it Works</Link>
+              <Link href="#pricing" className="text-lg font-medium" onClick={() => setIsMobileMenuOpen(false)}>Pricing</Link>
+              <div className="pt-6 border-t border-gray-100 flex flex-col gap-4">
+                {user ? (
+                  <>
+                    <div className="flex items-center gap-3 mb-2 p-2 bg-gray-50 rounded-xl">
+                      <Avatar className="w-10 h-10 border border-white shadow-sm">
+                        <AvatarImage src={user.photoURL || undefined} />
+                        <AvatarFallback className="bg-black text-white">{user.displayName?.[0] || 'U'}</AvatarFallback>
+                      </Avatar>
+                      <div className="flex flex-col">
+                        <span className="font-medium text-sm">{user.displayName}</span>
+                        <span className="text-xs text-gray-500">{user.email}</span>
+                      </div>
+                    </div>
+                    <Button onClick={() => router.push('/editor')} className="w-full bg-black text-white rounded-xl h-12 text-base shadow-lg">Dashboard</Button>
+                    <Button variant="outline" onClick={handleLogout} className="w-full rounded-xl h-12 text-base border-gray-200 text-gray-900 hover:bg-gray-50">Log out</Button>
+                  </>
+                ) : (
+                  <>
+                    <Link href="/login" className="w-full py-3 text-center font-medium border border-gray-200 rounded-xl hover:bg-gray-50 transition-colors">Log in</Link>
+                    <Button onClick={() => router.push('/signup')} className="w-full bg-black text-white rounded-xl h-12 text-base shadow-lg">Sign up free</Button>
+                  </>
+                )}
+              </div>
+            </div>
           </div>
         )}
-      </div>
-      <Separator />
-      <div className="my-6 sm:my-8">
-        <div className="flex flex-col lg:flex-row items-center justify-between">
-          <div className="w-full lg:w-1/2 mb-8 lg:mb-0">
-            <motion.h1
-              initial={{ opacity: 0, y: -50 }}
+      </nav>
+
+      {/* Hero Section */}
+      <section className="relative pt-32 pb-16 md:pt-48 md:pb-32 px-4 overflow-hidden bg-white antialiased bg-grid-black/[0.02]">
+        <Spotlight
+          className="-top-40 left-0 md:left-60 md:-top-20"
+          fill="rgba(0,0,0,0.05)"
+        />
+        <div className="container mx-auto max-w-6xl relative z-10">
+          <div className="flex flex-col items-center text-center">
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.5 }}
-              className="text-3xl sm:text-4xl lg:text-6xl font-bold mb-4 text-black"
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-gray-100 text-gray-600 text-sm font-medium mb-8 border border-gray-200"
             >
-              Text Inside Image
-              <br />
-              Elevate Your Images with Striking Text
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+              </span>
+              New: Advanced Text Effects
+            </motion.div>
+
+            <motion.h1
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.5, delay: 0.1 }}
+              className="text-5xl md:text-7xl lg:text-8xl font-bold tracking-tight mb-6 max-w-4xl text-black"
+            >
+              Text <span className="italic text-gray-400">Behind</span> Image
             </motion.h1>
 
             <motion.p
-              initial={{ opacity: 0, y: -30 }}
+              initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.5, delay: 0.2 }}
-              className="mb-6 text-sm sm:text-base text-gray-600"
+              className="text-lg md:text-xl text-gray-600 max-w-2xl mb-10 leading-relaxed"
             >
-              Enhance Your Visuals with Compelling Text Overlays
-              <br />
-              That Not Only Beautify but Also Convey Powerful Messages
+              Create viral-worthy content in seconds. The easiest way to add depth to your designs by placing text behind subjects automatically.
             </motion.p>
 
-            {/* ... existing code ... */}
-            <Button
-              className="bg-black text-white px-6 py-3 sm:px-8 sm:py-4 rounded-md text-sm sm:text-xl font-semibold hover:bg-gray-800 transition-colors duration-300 shadow-lg"
-              onClick={handleGetStarted}
-            >
-              {user ? "Design Now For Free" : "Login to Get Started"}
-            </Button>
-          </div>
-
-          <div className="w-full lg:w-1/2 relative h-[300px] sm:h-[400px] lg:h-[600px]">
             <motion.div
-              initial={{ opacity: 0, scale: 0.8 }}
-              animate={{ opacity: 1, scale: 1 }}
-              transition={{ duration: 0.5, delay: 0.4 }}
-              className="absolute top-0 left-0 w-3/4 h-3/4"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.5, delay: 0.3 }}
+              className="flex flex-col sm:flex-row gap-4 w-full sm:w-auto"
             >
-              <Image
-                src={images[0]}
-                alt="Nature image 1"
-                fill
-                style={{ objectFit: "contain" }}
-                className="rounded-3xl"
-                unoptimized
-              />
+              <button onClick={handleGetStarted} className="h-14 px-8 rounded-full text-lg bg-black text-white hover:bg-gray-800 hover:scale-105 transition-all duration-300 shadow-xl shadow-black/10 flex items-center justify-center gap-2 group font-semibold">
+                Start Creating Now <ArrowRight className="ml-2 w-5 h-5 group-hover:translate-x-1 transition-transform" />
+              </button>
+              <Button
+                variant="outline"
+                onClick={() => document.getElementById('how-it-works')?.scrollIntoView({ behavior: 'smooth' })}
+                className="h-14 px-8 rounded-full text-lg border-gray-200 text-black hover:bg-gray-50 transition-all duration-300 bg-white"
+              >
+                See how it works
+              </Button>
             </motion.div>
+
+            {/* Hero Visual */}
             <motion.div
-              initial={{ opacity: 0, scale: 0.8 }}
-              animate={{ opacity: 1, scale: 1 }}
-              transition={{ duration: 0.5, delay: 0.6 }}
-              className="absolute bottom-0 right-0 w-3/4 h-3/4"
+              initial={{ opacity: 0, y: 40 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.8, delay: 0.5 }}
+              className="mt-20 relative w-full max-w-5xl aspect-[16/9] rounded-2xl overflow-hidden shadow-2xl border border-gray-200 group"
             >
+              <div className="absolute inset-0 bg-gray-50 animate-pulse" />
               <Image
-                src={images[1]}
-                alt="Nature image 2"
+                src="/images/legend.webp"
+                alt="App Interface Preview"
                 fill
-                style={{ objectFit: "contain" }}
-                className="rounded-3xl"
+                className="object-cover transition-transform duration-700 group-hover:scale-105"
+                priority
                 unoptimized
               />
+              <div className="absolute inset-0 bg-gradient-to-t from-white/20 to-transparent pointer-events-none" />
             </motion.div>
           </div>
         </div>
-      </div>
+      </section>
 
-      <div className="my-8">
-        <div className="grid grid-cols-2 sm:grid-cols-4 grid-rows-2 gap-4 h-[300px] sm:h-[400px] lg:h-[600px]">
-          <motion.div
-            initial={{ opacity: 0, scale: 0.9 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ duration: 0.5 }}
-            className="relative col-span-2 row-span-2"
-          >
-            <Image
-              src="/images/car.webp"
-              alt="Car"
-              fill
-              style={{ objectFit: "cover" }}
-              className="rounded-lg"
-              unoptimized
-            />
-          </motion.div>
 
-          <motion.div
-            initial={{ opacity: 0, scale: 0.9 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ duration: 0.5, delay: 0.2 }}
-            className="relative col-span-2 row-span-1"
-          >
-            <Image
-              src="/images/van.webp"
-              alt="Confident"
-              fill
-              style={{ objectFit: "contain" }}
-              className="rounded-lg"
-              unoptimized
-            />
-          </motion.div>
-
-          <motion.div
-            initial={{ opacity: 0, scale: 0.9 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ duration: 0.5, delay: 0.4 }}
-            className="relative col-span-1 row-span-1"
-          >
-            <Image
-              src="/images/go.webp"
-              alt="Life"
-              fill
-              style={{ objectFit: "contain" }}
-              className="rounded-lg"
-              unoptimized
-            />
-          </motion.div>
-
-          <motion.div
-            initial={{ opacity: 0, scale: 0.9 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ duration: 0.5, delay: 0.6 }}
-            className="relative col-span-1 row-span-1"
-          >
-            <Image
-              src="/images/drone.webp"
-              alt="Another Car"
-              fill
-              style={{ objectFit: "cover" }}
-              className="rounded-lg"
-              unoptimized
-            />
-          </motion.div>
+      {/* Gallery Section */}
+      <section className="py-24 bg-white overflow-hidden">
+        <div className="container mx-auto px-4">
+          <div className="text-center mb-10">
+            <h2 className="text-3xl md:text-5xl font-bold mb-4 text-black">Made with TextBehindImage</h2>
+            <p className="text-gray-600 text-lg">See what our community is creating.</p>
+          </div>
+          <ParallaxScroll images={[
+            "/images/horizon.webp",
+            "/images/garden.webp",
+            "/images/wild.webp",
+            "/images/queen.webp",
+            "/images/airtime.webp",
+            "/images/fashion.webp",
+            "/images/confident.webp", // Repeating for demo
+            "/images/happy.webp",
+            "/images/drone.webp",
+          ]} className="h-[40rem]" />
         </div>
-      </div>
+      </section>
+      {/* Features Section */}
+      <section id="features" className="py-24 bg-gray-50">
+        <div className="container mx-auto px-4 max-w-6xl">
+          <div className="text-center mb-16">
+            <h2 className="text-3xl md:text-5xl font-bold mb-4 text-black">Everything you need</h2>
+            <p className="text-gray-600 text-lg">Professional tools made simple for everyone.</p>
+          </div>
+
+          <BentoGrid className="max-w-4xl mx-auto">
+            <BentoGridItem
+              title="Smart Layering"
+              description="Automatically detect subjects and place text behind them with precision."
+              header={
+                <div className="flex flex-1 w-full h-full min-h-[6rem] rounded-xl overflow-hidden relative">
+                  <Image
+                    src="/images/lakeside.webp"
+                    alt="Smart Layering"
+                    fill
+                    className="object-cover opacity-90 hover:scale-105 transition-transform duration-500"
+                  />
+                  <div className="absolute inset-0 bg-black/10" />
+                </div>
+              }
+              icon={<div className="p-2 bg-black/5 rounded-lg w-fit text-black"><Layers className="w-6 h-6" /></div>}
+              className="md:col-span-1"
+            />
+            <BentoGridItem
+              title="Instant Results"
+              description="Get professional-looking results in seconds, not hours of editing."
+              header={
+                <div className="flex flex-1 w-full h-full min-h-[6rem] rounded-xl bg-gradient-to-br from-gray-100 to-gray-200 border border-gray-100 flex-col items-center justify-center relative overflow-hidden group">
+                  <div className="absolute inset-0 bg-white/50 backdrop-blur-sm z-10 hidden group-hover:flex items-center justify-center transition-all">
+                    <span className="text-4xl font-bold text-black">0.5s</span>
+                  </div>
+                  <Image src="/images/legend.webp" alt="Fast" fill className="object-cover opacity-50 grayscale group-hover:grayscale-0 transition-all duration-500" />
+                </div>
+              }
+              icon={<div className="p-2 bg-black/5 rounded-lg w-fit text-black"><Zap className="w-6 h-6" /></div>}
+              className="md:col-span-1"
+            />
+            <BentoGridItem
+              title="High Quality Export"
+              description="Download your creations in high resolution, ready for social media."
+              header={
+                <div className="flex flex-1 w-full h-full min-h-[6rem] rounded-xl bg-gray-100 border border-gray-100 flex-col items-center justify-center relative overflow-hidden">
+                  <Image src="/images/car.webp" alt="High Quality" fill className="object-cover hover:scale-110 transition-transform duration-700" />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent flex items-end p-4">
+                    <span className="text-white font-bold text-xl">4K Export</span>
+                  </div>
+                </div>
+              }
+              icon={<div className="p-2 bg-black/5 rounded-lg w-fit text-black"><Download className="w-6 h-6" /></div>}
+              className="md:col-span-1"
+            />
+          </BentoGrid>
+        </div>
+      </section>
+      {/* How It Works */}
+      <section id="how-it-works" className="py-24 bg-gray-50">
+        <div className="container mx-auto px-4 max-w-6xl">
+          <div className="text-center mb-16">
+            <h2 className="text-3xl md:text-5xl font-bold mb-4 text-black">How it works</h2>
+            <p className="text-gray-600 text-lg">Create stunning visuals in three simple steps.</p>
+          </div>
+
+          <StickyScroll
+            content={steps.map((step, i) => ({
+              title: step.title,
+              description: step.desc,
+              content: (
+                <div className="h-full w-full flex items-center justify-center text-white">
+                  <Image
+                    src={i === 0 ? "/images/fly_before.webp" : i === 1 ? "/images/fly_after.webp" : "/images/car.webp"}
+                    width={300}
+                    height={300}
+                    className="h-full w-full object-cover"
+                    alt="linear board demo"
+                    unoptimized
+                  />
+                </div>
+              ),
+            }))}
+            contentClassName="bg-gray-100"
+          />
+
+          <div className="mt-10 text-center">
+            <Link href="/editor" onClick={handleGetStarted}>
+              <button className="bg-black text-white rounded-full px-8 py-6 text-lg hover:bg-gray-800 font-bold transition-colors">
+                Try it yourself
+              </button>
+            </Link>
+          </div>
+        </div>
+      </section>
 
       {/* Pricing Section */}
-      <div className="my-16 sm:my-24" id="pricing">
-        <h2 className="text-3xl sm:text-4xl font-bold text-center mb-4 text-black">Simple, Transparent Pricing</h2>
-        <p className="text-center text-gray-600 mb-12 text-lg">Start for free, upgrade for unlimited power</p>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-4xl mx-auto px-4">
-          {/* Monthly Plan */}
-          <div className="border rounded-2xl p-8 flex flex-col gap-6 hover:shadow-xl transition-shadow bg-white relative overflow-hidden group">
-            <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-gray-200 to-gray-400 group-hover:from-black group-hover:to-gray-800 transition-all"></div>
-            <div>
-              <h3 className="text-2xl font-bold text-black">Monthly</h3>
-              <p className="text-gray-500 mt-2">Perfect for short-term projects</p>
-            </div>
-            <div className="flex items-baseline">
-              <span className="text-5xl font-bold text-black">$9</span>
-              <span className="text-gray-500 ml-2">/month</span>
-            </div>
-            <ul className="space-y-4 flex-1">
-              <li className="flex items-center gap-3 text-gray-700">
-                <div className="w-5 h-5 rounded-full bg-black/5 flex items-center justify-center">
-                  <svg className="w-3 h-3 text-black" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>
-                </div>
-                Unlimited Background Removals
-              </li>
-              <li className="flex items-center gap-3 text-gray-700">
-                <div className="w-5 h-5 rounded-full bg-black/5 flex items-center justify-center">
-                  <svg className="w-3 h-3 text-black" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>
-                </div>
-                High Quality Export
-              </li>
-              <li className="flex items-center gap-3 text-gray-700">
-                <div className="w-5 h-5 rounded-full bg-black/5 flex items-center justify-center">
-                  <svg className="w-3 h-3 text-black" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>
-                </div>
-                Priority Support
-              </li>
-            </ul>
-            <Button
-              className="w-full bg-white text-black border-2 border-black hover:bg-black hover:text-white transition-colors py-6 text-lg"
-              onClick={handleGetStarted}
-            >
-              Get Started
-            </Button>
+      <section id="pricing" className="py-24 bg-gray-50 text-black border-t border-gray-200">
+        <div className="container mx-auto px-4 max-w-6xl">
+          <div className="text-center mb-16">
+            <h2 className="text-3xl md:text-5xl font-bold mb-6">Simple, Transparent Pricing</h2>
+            <p className="text-gray-600 text-lg">Start for free, upgrade for power.</p>
           </div>
 
-          {/* Yearly Plan */}
-          <div className="border rounded-2xl p-8 flex flex-col gap-6 hover:shadow-xl transition-shadow bg-black text-white relative overflow-hidden transform md:-translate-y-4">
-            <div className="absolute top-4 right-4 bg-white text-black px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider">
-              Best Value
-            </div>
-            <div>
-              <h3 className="text-2xl font-bold">Yearly</h3>
-              <p className="text-gray-400 mt-2">Save money with annual billing</p>
-            </div>
-            <div className="flex items-baseline">
-              <span className="text-5xl font-bold">$6</span>
-              <span className="text-gray-400 ml-2">/month</span>
-            </div>
-            <p className="text-sm text-gray-400 -mt-4">Billed $72 yearly</p>
-            <ul className="space-y-4 flex-1">
-              <li className="flex items-center gap-3 text-gray-300">
-                <div className="w-5 h-5 rounded-full bg-white/20 flex items-center justify-center">
-                  <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>
-                </div>
-                All Monthly Features
-              </li>
-              <li className="flex items-center gap-3 text-gray-300">
-                <div className="w-5 h-5 rounded-full bg-white/20 flex items-center justify-center">
-                  <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>
-                </div>
-                Save $36 per year
-              </li>
-            </ul>
-            <Button
-              className="w-full bg-white text-black hover:bg-gray-200 transition-colors py-6 text-lg font-bold"
-              onClick={handleGetStarted}
+          <div className="grid md:grid-cols-2 gap-8 max-w-4xl mx-auto">
+            {/* Monthly Plan */}
+            <motion.div
+              whileHover={{ y: -10 }}
+              className={`bg-white rounded-3xl p-8 border ${subscriptionStatus === 'active' && subscriptionInterval?.toLowerCase() === 'month' ? 'border-green-500' : 'border-gray-200'} flex flex-col relative hover:shadow-xl transition-all shadow-sm`}
             >
-              Get Started Yearly
-            </Button>
+              {subscriptionStatus === 'active' && subscriptionInterval?.toLowerCase() === 'month' && (
+                <div className="absolute top-4 right-4 bg-green-500 text-white px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider">
+                  Current Plan
+                </div>
+              )}
+              <div className="mb-8">
+                <h3 className="text-2xl font-bold mb-2">Monthly</h3>
+                <p className="text-gray-500">Perfect for short-term projects</p>
+              </div>
+              <div className="flex items-baseline mb-8">
+                <span className="text-5xl font-bold">$9</span>
+                <span className="text-gray-500 ml-2">/month</span>
+              </div>
+              <ul className="space-y-4 mb-8 flex-1">
+                {['Unlimited Edits Usage', 'Advanced Text Effects (3D, Curve)', 'Pro Image Adjustments', 'Priority Support'].map((item, i) => (
+                  <li key={i} className="flex items-center gap-3 text-gray-700">
+                    <div className="w-6 h-6 rounded-full bg-black/5 flex items-center justify-center">
+                      <Check className="w-3 h-3" />
+                    </div>
+                    {item}
+                  </li>
+                ))}
+              </ul>
+              {subscriptionStatus === 'active' && subscriptionInterval?.toLowerCase() === 'month' ? (
+                <Button onClick={handlePortal} disabled={loading === 'portal'} className="w-full bg-black text-white hover:bg-gray-800 py-6 rounded-xl text-lg font-bold">
+                  {loading === 'portal' ? 'Loading...' : 'Manage Subscription'}
+                </Button>
+              ) : (
+                <Button
+                  onClick={() => subscriptionStatus === 'active' ? handlePortal() : handleCheckout('monthly')}
+                  disabled={loading === 'monthly' || loading === 'portal'}
+                  className="w-full bg-black text-white hover:bg-gray-800 py-6 rounded-xl text-lg font-bold"
+                >
+                  {subscriptionStatus === 'active' ? 'Switch Plan' : (loading === 'monthly' ? 'Processing...' : 'Get Started')}
+                </Button>
+              )}
+            </motion.div>
+
+            {/* Yearly Plan */}
+            <motion.div
+              whileHover={{ y: -10 }}
+              className={`bg-gradient-to-b from-gray-900 to-black text-white rounded-3xl p-8 border ${subscriptionStatus === 'active' && subscriptionInterval?.toLowerCase() === 'year' ? 'border-green-500' : 'border-gray-800'} flex flex-col relative overflow-hidden shadow-xl`}
+            >
+              {subscriptionStatus === 'active' && subscriptionInterval?.toLowerCase() === 'year' ? (
+                <div className="absolute top-4 right-4 bg-green-500 text-white px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider">
+                  Current Plan
+                </div>
+              ) : (
+                <div className="absolute top-4 right-4 bg-white text-black px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider">
+                  Best Value
+                </div>
+              )}
+              <div className="mb-8">
+                <h3 className="text-2xl font-bold mb-2">Yearly</h3>
+                <p className="text-gray-400">Save money with annual billing</p>
+              </div>
+              <div className="flex items-baseline mb-2">
+                <span className="text-5xl font-bold">$6</span>
+                <span className="text-gray-400 ml-2">/month</span>
+              </div>
+              <p className="text-sm text-gray-500 mb-8">Billed $72 yearly</p>
+              <ul className="space-y-4 mb-8 flex-1">
+                {['All Monthly Features', 'Save $36 per year', 'Early access to new features'].map((item, i) => (
+                  <li key={i} className="flex items-center gap-3 text-white">
+                    <div className="w-6 h-6 rounded-full bg-green-500/20 flex items-center justify-center text-green-500">
+                      <Check className="w-3 h-3" />
+                    </div>
+                    {item}
+                  </li>
+                ))}
+              </ul>
+              {subscriptionStatus === 'active' && subscriptionInterval?.toLowerCase() === 'year' ? (
+                <Button onClick={handlePortal} disabled={loading === 'portal'} className="w-full bg-white text-black hover:bg-gray-200 py-6 rounded-xl text-lg font-bold">
+                  {loading === 'portal' ? 'Loading...' : 'Manage Subscription'}
+                </Button>
+              ) : (
+                <Button
+                  onClick={() => subscriptionStatus === 'active' ? handlePortal() : handleCheckout('yearly')}
+                  disabled={loading === 'yearly' || loading === 'portal'}
+                  className="w-full bg-white text-black hover:bg-gray-200 py-6 rounded-xl text-lg font-bold"
+                >
+                  {subscriptionStatus === 'active' ? 'Switch Plan' : (loading === 'yearly' ? 'Processing...' : 'Get Started Yearly')}
+                </Button>
+              )}
+            </motion.div>
           </div>
         </div>
-      </div>
+      </section>
 
-      <footer className="bg-gray-100 mt-8 sm:mt-16">
-        <div className="container mx-auto px-4 py-6 sm:py-8">
-          <div className="flex flex-col sm:flex-row justify-between items-center">
-            <div className="mb-4 sm:mb-0">
-              <p className="text-gray-600 text-sm sm:text-base">Created by Vyshnav TR</p>
+      {/* FAQ Section */}
+      <section id="faq" className="py-24 bg-gray-50">
+        <div className="container mx-auto px-4 max-w-3xl">
+          <div className="text-center mb-16">
+            <h2 className="text-3xl md:text-5xl font-bold mb-4 text-black">Frequently Asked Questions</h2>
+            <p className="text-gray-600 text-lg">Got questions? We&apos;ve got answers.</p>
+          </div>
+
+          <Accordion type="single" collapsible className="w-full">
+            <AccordionItem value="item-1">
+              <AccordionTrigger className="text-lg font-medium">What is TextBehindImage?</AccordionTrigger>
+              <AccordionContent className="text-gray-600 text-base">
+                TextBehindImage is an AI-powered tool that allows you to easily place text behind subjects in your photos. It automatically detects the subject and creates a depth effect, making your designs look professional in seconds.
+              </AccordionContent>
+            </AccordionItem>
+            <AccordionItem value="item-2">
+              <AccordionTrigger className="text-lg font-medium">Is it free to use?</AccordionTrigger>
+              <AccordionContent className="text-gray-600 text-base">
+                Yes, we offer a free tier that allows you to try out the basic features. For unlimited edits, higher resolution exports, and advanced text effects, you can upgrade to our Pro plan.
+              </AccordionContent>
+            </AccordionItem>
+            <AccordionItem value="item-3">
+              <AccordionTrigger className="text-lg font-medium">How does the smart layering work?</AccordionTrigger>
+              <AccordionContent className="text-gray-600 text-base">
+                We use advanced computer vision algorithms to analyze your image and separate the foreground subject from the background. This allows us to place text &quot;behind&quot; the subject while keeping it in front of the background.
+              </AccordionContent>
+            </AccordionItem>
+            <AccordionItem value="item-4">
+              <AccordionTrigger className="text-lg font-medium">Can I use my own images?</AccordionTrigger>
+              <AccordionContent className="text-gray-600 text-base">
+                Absolutely! You can upload any image from your device. We support common formats like JPG, PNG, and WEBP.
+              </AccordionContent>
+            </AccordionItem>
+            <AccordionItem value="item-5">
+              <AccordionTrigger className="text-lg font-medium">What formats are supported for export?</AccordionTrigger>
+              <AccordionContent className="text-gray-600 text-base">
+                You can export your final designs in high-quality PNG format, perfect for sharing on social media platforms like Instagram, TikTok, and YouTube.
+              </AccordionContent>
+            </AccordionItem>
+          </Accordion>
+        </div>
+      </section>
+
+      {/* Footer */}
+      <footer className="bg-white border-t border-gray-200 pt-16 pb-8">
+        <div className="container mx-auto px-4 max-w-6xl">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-12 mb-16">
+            <div className="col-span-1 md:col-span-2">
+              <Link href="/" className="flex items-center gap-2 mb-6">
+                <Image src="/images/wordmark.png" alt="TextBehindImage" width={150} height={30} className="h-8 w-auto object-contain" />
+              </Link>
+              <p className="text-gray-500 text-lg mb-8 max-w-md">
+                The easiest way to add depth to your designs. Create viral-worthy content in seconds with our advanced AI tools.
+              </p>
+              <div className="flex gap-4">
+                <a href="#" className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center text-gray-600 hover:bg-black hover:text-white transition-all">
+                  <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M8.29 20.251c7.547 0 11.675-6.253 11.675-11.675 0-.178 0-.355-.012-.53A8.348 8.348 0 0022 5.92a8.19 8.19 0 01-2.357.646 4.118 4.118 0 001.804-2.27 8.224 8.224 0 01-2.605.996 4.107 4.107 0 00-6.993 3.743 11.65 11.65 0 01-8.457-4.287 4.106 4.106 0 001.27 5.477A4.072 4.072 0 012.8 9.713v.052a4.105 4.105 0 003.292 4.022 4.095 4.095 0 01-1.853.07 4.108 4.108 0 003.834 2.85A8.233 8.233 0 012 18.407a11.616 11.616 0 006.29 1.84" />
+                  </svg>
+                </a>
+                <a href="#" className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center text-gray-600 hover:bg-black hover:text-white transition-all">
+                  <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path fillRule="evenodd" d="M12.315 2c2.43 0 2.784.013 3.808.06 1.064.049 1.791.218 2.427.465a4.902 4.902 0 011.772 1.153 4.902 4.902 0 011.153 1.772c.247.636.416 1.363.465 2.427.048 1.067.06 1.407.06 4.123v.08c0 2.643-.012 2.987-.06 4.043-.049 1.064-.218 1.791-.465 2.427a4.902 4.902 0 01-1.153 1.772 4.902 4.902 0 01-1.772 1.153c-.636.247-1.363.416-2.427.465-1.067.048-1.407.06-4.123.06h-.08c-2.643 0-2.987-.012-4.043-.06-1.064-.049-1.791-.218-2.427-.465a4.902 4.902 0 01-1.772-1.153 4.902 4.902 0 01-1.153-1.772c-.247-.636-.416-1.363-.465-2.427-.047-1.024-.06-1.379-.06-3.808v-.63c0-2.43.013-2.784.06-3.808.049-1.064.218-1.791.465-2.427a4.902 4.902 0 011.153-1.772 4.902 4.902 0 011.772-1.153c.636-.247 1.363-.416 2.427-.465 1.067-.047 1.407-.06 4.123-.06h.08v.001zm0 1.802c-2.615 0-2.94.011-3.968.058-.975.045-1.504.207-1.857.344-.467.182-.8.398-1.15.748-.35.35-.566.683-.748 1.15-.137.353-.3.882-.344 1.857-.047 1.023-.058 1.351-.058 3.969v.08c0 2.615.011 2.94.058 3.968.045.975.207 1.504.344 1.857.182.466.399.8.748 1.15.35.35.683.566 1.15.748.353.137.882.3 1.857.344 1.054.048 1.37.058 4.041.058h.08c2.597 0 2.917-.01 3.96-.058.976-.045 1.505-.207 1.858-.344.466-.182.8-.398 1.15-.748.35-.35.566-.683.748-1.15.137-.353.3-.882.344-1.857.048-1.055.058-1.37.058-4.041v-.08c0-2.597-.01-2.917-.058-3.96-.045-.976-.207-1.505-.344-1.858a3.097 3.097 0 00-.748-1.15 3.098 3.098 0 00-1.15-.748c-.353-.137-.882-.3-1.857-.344-1.023-.047-1.351-.058-3.968-.058v-.001zm0 4.378a5.317 5.317 0 110 10.634 5.317 5.317 0 010-10.634zm0 1.802a3.515 3.515 0 100 7.03 3.515 3.515 0 000-7.03zm5.336-5.759a1.2 1.2 0 110 2.4 1.2 1.2 0 010-2.4z" clipRule="evenodd" />
+                  </svg>
+                </a>
+              </div>
             </div>
-            <a href="https://www.buymeacoffee.com/vyshnav.tr" target="_blank">
-              <Image
-                src="/images/default-yellow.png"
-                alt="Buy Me A Coffee"
-                width={217}
-                height={60}
-                className="h-10 w-auto"
-                unoptimized
-              />
-            </a>
-            <div className="flex space-x-4">
-              <a href="https://x.com/vyshnav_tr_?t=Qk-a0kwEArQKBJvd5-zR-Q&s=08" target="_blank" rel="noopener noreferrer" className="text-gray-600 hover:text-gray-800">
-                <svg className="w-5 h-5 sm:w-6 sm:h-6" fill="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M18.901 1.153h3.68l-8.04 9.19L24 22.846h-7.406l-5.8-7.584-6.638 7.584H.474l8.6-9.83L0 1.154h7.594l5.243 6.932ZM17.61 20.644h2.039L6.486 3.24H4.298Z" />
-                </svg>
-              </a>
-              <a href="https://www.linkedin.com/in/vyshnav-tr-7b4902204?utm_source=share&utm_campaign=share_via&utm_content=profile&utm_medium=android_app" target="_blank" rel="noopener noreferrer" className="text-gray-600 hover:text-gray-800">
-                <svg className="w-5 h-5 sm:w-6 sm:h-6" fill="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433c-1.144 0-2.063-.926-2.063-2.065 0-1.138.92-2.063 2.063-2.063 1.14 0 2.064.925 2.064 2.063 0 1.139-.925 2.065-2.064 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z" />
-                </svg>
-              </a>
-              <a href="https://www.instagram.com/vyshnav.t.r/" target="_blank" rel="noopener noreferrer" className="text-gray-600 hover:text-gray-800">
-                <svg className="w-5 h-5 sm:w-6 sm:h-6" fill="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M12 0C8.74 0 8.333.015 7.053.072 5.775.132 4.905.333 4.14.63c-.789.306-1.459.717-2.126 1.384S.935 3.35.63 4.14C.333 4.905.131 5.775.072 7.053.012 8.333 0 8.74 0 12s.015 3.667.072 4.947c.06 1.277.261 2.148.558 2.913.306.788.717 1.459 1.384 2.126.667.666 1.336 1.079 2.126 1.384.766.296 1.636.499 2.913.558C8.333 23.988 8.74 24 12 24s3.667-.015 4.947-.072c1.277-.06 2.148-.262 2.913-.558.788-.306 1.459-.718 2.126-1.384.666-.667 1.079-1.335 1.384-2.126.296-.765.499-1.636.558-2.913.06-1.28.072-1.687.072-4.947s-.015-3.667-.072-4.947c-.06-1.277-.262-2.149-.558-2.913-.306-.789-.718-1.459-1.384-2.126C21.319 1.347 20.651.935 19.86.63c-.765-.297-1.636-.499-2.913-.558C15.667.012 15.26 0 12 0zm0 2.16c3.203 0 3.585.016 4.85.071 1.17.055 1.805.249 2.227.415.562.217.96.477 1.382.896.419.42.679.819.896 1.381.164.422.36 1.057.413 2.227.057 1.266.07 1.646.07 4.85s-.015 3.585-.074 4.85c-.061 1.17-.256 1.805-.421 2.227-.224.562-.479.96-.899 1.382-.419.419-.824.679-1.38.896-.42.164-1.065.36-2.235.413-1.274.057-1.649.07-4.859.07-3.211 0-3.586-.015-4.859-.074-1.171-.061-1.816-.256-2.236-.421-.569-.224-.96-.479-1.379-.899-.421-.419-.69-.824-.9-1.38-.165-.42-.359-1.065-.42-2.235-.045-1.26-.061-1.649-.061-4.844 0-3.196.016-3.586.061-4.861.061-1.17.255-1.814.42-2.234.21-.57.479-.96.9-1.381.419-.419.81-.689 1.379-.898.42-.166 1.051-.361 2.221-.421 1.275-.045 1.65-.06 4.859-.06l.045.03zm0 3.678c-3.405 0-6.162 2.76-6.162 6.162 0 3.405 2.76 6.162 6.162 6.162 3.405 0 6.162-2.76 6.162-6.162 0-3.405-2.76-6.162-6.162-6.162zM12 16c-2.21 0-4-1.79-4-4s1.79-4 4-4 4 1.79 4 4-1.79 4-4 4zm7.846-10.405c0 .795-.646 1.44-1.44 1.44-.795 0-1.44-.646-1.44-1.44 0-.794.646-1.439 1.44-1.439.793-.001 1.44.645 1.44 1.439z" />
-                </svg>
-              </a>
-              <a href="https://github.com/Vyshnavtr0" target="_blank" rel="noopener noreferrer" className="text-gray-600 hover:text-gray-800">
-                <svg className="w-5 h-5 sm:w-6 sm:h-6" fill="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12" />
-                </svg>
-              </a>
+
+            <div>
+              <h4 className="font-bold text-black mb-6">Product</h4>
+              <ul className="space-y-4 text-gray-600">
+                <li><Link href="#features" className="hover:text-black transition-colors">Features</Link></li>
+                <li><Link href="#pricing" className="hover:text-black transition-colors">Pricing</Link></li>
+                <li><Link href="#faq" className="hover:text-black transition-colors">FAQ</Link></li>
+                <li><Link href="/editor" className="hover:text-black transition-colors">Editor</Link></li>
+                <li><Link href="#" className="hover:text-black transition-colors">Showcase</Link></li>
+              </ul>
+            </div>
+
+            <div>
+              <h4 className="font-bold text-black mb-6">Company</h4>
+              <ul className="space-y-4 text-gray-600">
+                <li><Link href="/about" className="hover:text-black transition-colors">About</Link></li>
+                <li><Link href="/blog" className="hover:text-black transition-colors">Blog</Link></li>
+                <li><Link href="/contact" className="hover:text-black transition-colors">Contact</Link></li>
+              </ul>
+            </div>
+          </div>
+
+          <div className="pt-8 border-t border-gray-200 flex flex-col md:flex-row justify-between items-center gap-4">
+            <p className="text-sm text-gray-500">
+              © {new Date().getFullYear()} Vyshnav TR. All rights reserved.
+            </p>
+            <div className="flex gap-8 text-sm text-gray-600">
+              <Link href="/privacy-policy" className="hover:text-black transition-colors">Privacy Policy</Link>
+              <Link href="/terms-of-service" className="hover:text-black transition-colors">Terms of Service</Link>
             </div>
           </div>
         </div>
       </footer>
-
-
     </div>
   );
 };

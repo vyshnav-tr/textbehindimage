@@ -14,8 +14,9 @@ const geistMono = localFont({
 });
 
 export const metadata: Metadata = {
-  title: "Text Inside Image",
-  description: "TEXTINSIDEIMAGE is a powerful tool for adding captivating text to images. Perfect for designers, marketers, and creators, it lets you customize fonts, colors, and placements to create stunning visuals.",
+  title: "Text Behind Image - Add Text Behind Objects in Photos",
+  description: "Create stunning visuals by adding text behind images and objects. The best free tool for text behind image effects, typography, and creative photo editing. No signup required for basic features.",
+  keywords: ["text behind image", "text behind object", "text behind person", "photo editor", "typography", "3d text", "curve text", "image editor", "creative typography"],
 };
 
 export default function RootLayout({

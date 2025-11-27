@@ -12,7 +12,15 @@ const nextConfig = {
     ],
   },
   // Explicitly mark firebase-admin as server-only to prevent client bundling
-  serverComponentsExternalPackages: ['firebase-admin'],
+  serverComponentsExternalPackages: ['firebase-admin', '@imgly/background-removal-node', 'onnxruntime-node', 'sharp'],
+  webpack: (config) => {
+    config.externals.push({
+      '@imgly/background-removal-node': 'commonjs @imgly/background-removal-node',
+      'onnxruntime-node': 'commonjs onnxruntime-node',
+      'sharp': 'commonjs sharp',
+    })
+    return config
+  },
 }
 
 // Add this at the end of the file

@@ -4,7 +4,6 @@ import React, { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Separator } from '@/components/ui/separator';
 import { auth } from '@/app/firebase';
 import {
     signInWithPopup,
@@ -12,9 +11,10 @@ import {
     createUserWithEmailAndPassword,
     updateProfile
 } from 'firebase/auth';
-import { Loader2, Mail, Lock, User } from 'lucide-react';
+import { Loader2, ArrowLeft, Image as ImageIcon } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import Image from 'next/image';
 
 export default function SignupPage() {
     const router = useRouter();
@@ -31,10 +31,6 @@ export default function SignupPage() {
             const provider = new GoogleAuthProvider();
             const result = await signInWithPopup(auth, provider);
             if (result.user) {
-                // Check if we need to save user to Firestore here too? 
-                // The webhook handles subscription status, but basic user info might be needed.
-                // Let's do a quick fetch to credits API which creates the user doc if missing.
-                // Sync user to Firestore
                 await fetch('/api/user/sync', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -67,21 +63,7 @@ export default function SignupPage() {
         try {
             const result = await createUserWithEmailAndPassword(auth, email, password);
             if (result.user) {
-                // Update profile with name
-                await updateProfile(result.user, {
-                    displayName: name
-                });
-
-                // Create user document in Firestore via API (or directly if we had client SDK setup, but API is safer/consistent)
-                // Actually, our credits API handles creation on GET if missing.
-                // But we want to store the name too.
-                // Since we don't have a direct "create user" API that takes name, we can rely on the credits API to init 
-                // and maybe update name later or just rely on Auth profile.
-                // However, the user explicitly asked to "store everything in the firestore database".
-                // So let's make a call to ensure it's stored.
-
-                // We can use the credits API to init the doc.
-                // Sync user to Firestore
+                await updateProfile(result.user, { displayName: name });
                 await fetch('/api/user/sync', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -91,10 +73,6 @@ export default function SignupPage() {
                         name: name
                     })
                 });
-
-                // Ideally we should update the doc with name. 
-                // For now, let's just proceed. The Auth profile has the name.
-
                 router.push('/editor');
             }
         } catch (err: unknown) {
@@ -106,71 +84,65 @@ export default function SignupPage() {
 
     const getErrorMessage = (code: string): string => {
         switch (code) {
-            case 'auth/email-already-in-use':
-                return 'Email already in use';
-            case 'auth/invalid-email':
-                return 'Invalid email address';
-            case 'auth/user-not-found':
-                return 'No account found with this email';
-            case 'auth/wrong-password':
-                return 'Incorrect password';
-            case 'auth/weak-password':
-                return 'Password should be at least 6 characters';
-            case 'auth/too-many-requests':
-                return 'Too many attempts. Please try again later';
-            default:
-                return 'An error occurred. Please try again';
+            case 'auth/email-already-in-use': return 'Email already in use';
+            case 'auth/invalid-email': return 'Invalid email address';
+            case 'auth/user-not-found': return 'No account found with this email';
+            case 'auth/wrong-password': return 'Incorrect password';
+            case 'auth/weak-password': return 'Password should be at least 6 characters';
+            case 'auth/too-many-requests': return 'Too many attempts. Please try again later';
+            default: return 'An error occurred. Please try again';
         }
     };
 
     return (
-        <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900 p-4">
-            <div className="w-full max-w-md bg-white dark:bg-gray-950 rounded-xl shadow-lg p-8">
-                <div className="space-y-6">
-                    <div className="space-y-2 text-center">
-                        <h2 className="text-3xl font-bold text-gray-900 dark:text-white">Create Account</h2>
-                        <p className="text-base text-gray-600 dark:text-gray-400">
-                            Sign up to get started with Text Behind Image
-                        </p>
+        <div className="min-h-screen w-full flex">
+            {/* Left Side - Form */}
+            <div className="w-full lg:w-1/2 flex flex-col p-8 lg:p-12 xl:p-24 bg-white relative">
+                <Link href="/" className="absolute top-8 left-8 flex items-center gap-2 text-sm font-medium text-gray-600 hover:text-black transition-colors">
+                    <ArrowLeft className="w-4 h-4" /> Back to Home
+                </Link>
+
+                <div className="flex-1 flex flex-col justify-center max-w-md mx-auto w-full">
+                    <div className="mb-8">
+                        <div className="w-10 h-10 bg-black rounded-xl flex items-center justify-center text-white mb-6">
+                            <ImageIcon size={20} />
+                        </div>
+                        <h1 className="text-3xl font-bold tracking-tight text-black mb-2">Create an account</h1>
+                        <p className="text-gray-500">Start creating stunning visuals today</p>
                     </div>
 
-                    <Button
-                        onClick={handleGoogleLogin}
-                        disabled={loading}
-                        variant="outline"
-                        className="w-full h-12 text-base font-medium border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-900"
-                    >
-                        {loading ? (
-                            <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                        ) : (
-                            <svg className="mr-3 h-5 w-5" viewBox="0 0 24 24">
-                                <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
-                                <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
-                                <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" />
-                                <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
-                            </svg>
-                        )}
-                        Continue with Google
-                    </Button>
+                    <div className="space-y-6">
+                        <Button
+                            onClick={handleGoogleLogin}
+                            disabled={loading}
+                            variant="outline"
+                            className="w-full h-12 text-base font-medium border-gray-200 hover:bg-gray-50 hover:border-gray-300 transition-all"
+                        >
+                            {loading ? (
+                                <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                            ) : (
+                                <svg className="mr-3 h-5 w-5" viewBox="0 0 24 24">
+                                    <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+                                    <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+                                    <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" />
+                                    <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
+                                </svg>
+                            )}
+                            Continue with Google
+                        </Button>
 
-                    <div className="relative">
-                        <div className="absolute inset-0 flex items-center">
-                            <Separator />
+                        <div className="relative">
+                            <div className="absolute inset-0 flex items-center">
+                                <div className="w-full border-t border-gray-200"></div>
+                            </div>
+                            <div className="relative flex justify-center text-xs uppercase">
+                                <span className="bg-white px-2 text-gray-400">Or continue with email</span>
+                            </div>
                         </div>
-                        <div className="relative flex justify-center text-xs uppercase">
-                            <span className="bg-white dark:bg-gray-950 px-2 text-gray-500">
-                                OR CONTINUE WITH EMAIL
-                            </span>
-                        </div>
-                    </div>
 
-                    <form onSubmit={handleEmailSignup} className="space-y-4">
-                        <div className="space-y-2">
-                            <Label htmlFor="name" className="text-base font-medium text-gray-900 dark:text-white">
-                                Full Name
-                            </Label>
-                            <div className="relative">
-                                <User className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400" />
+                        <form onSubmit={handleEmailSignup} className="space-y-4">
+                            <div className="space-y-2">
+                                <Label htmlFor="name">Full Name</Label>
                                 <Input
                                     id="name"
                                     type="text"
@@ -178,18 +150,11 @@ export default function SignupPage() {
                                     value={name}
                                     onChange={(e) => setName(e.target.value)}
                                     required
-                                    disabled={loading}
-                                    className="pl-11 h-12 text-base border-gray-300 dark:border-gray-700"
+                                    className="h-12 bg-gray-50 border-gray-200 focus:bg-white transition-colors"
                                 />
                             </div>
-                        </div>
-
-                        <div className="space-y-2">
-                            <Label htmlFor="email" className="text-base font-medium text-gray-900 dark:text-white">
-                                Email
-                            </Label>
-                            <div className="relative">
-                                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400" />
+                            <div className="space-y-2">
+                                <Label htmlFor="email">Email</Label>
                                 <Input
                                     id="email"
                                     type="email"
@@ -197,18 +162,11 @@ export default function SignupPage() {
                                     value={email}
                                     onChange={(e) => setEmail(e.target.value)}
                                     required
-                                    disabled={loading}
-                                    className="pl-11 h-12 text-base border-gray-300 dark:border-gray-700"
+                                    className="h-12 bg-gray-50 border-gray-200 focus:bg-white transition-colors"
                                 />
                             </div>
-                        </div>
-
-                        <div className="space-y-2">
-                            <Label htmlFor="password" className="text-base font-medium text-gray-900 dark:text-white">
-                                Password
-                            </Label>
-                            <div className="relative">
-                                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400" />
+                            <div className="space-y-2">
+                                <Label htmlFor="password">Password</Label>
                                 <Input
                                     id="password"
                                     type="password"
@@ -216,43 +174,45 @@ export default function SignupPage() {
                                     value={password}
                                     onChange={(e) => setPassword(e.target.value)}
                                     required
-                                    disabled={loading}
-                                    className="pl-11 h-12 text-base border-gray-300 dark:border-gray-700"
+                                    className="h-12 bg-gray-50 border-gray-200 focus:bg-white transition-colors"
                                 />
                             </div>
-                        </div>
 
-                        {error && (
-                            <div className="p-3 rounded-md bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900/50">
-                                <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
-                            </div>
-                        )}
-
-                        <Button
-                            type="submit"
-                            disabled={loading}
-                            className="w-full h-12 text-base font-semibold bg-black hover:bg-gray-800 dark:bg-white dark:text-black dark:hover:bg-gray-200"
-                        >
-                            {loading ? (
-                                <>
-                                    <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                                    Creating account...
-                                </>
-                            ) : (
-                                'Create Account'
+                            {error && (
+                                <div className="p-3 rounded-lg bg-red-50 border border-red-100 text-sm text-red-600">
+                                    {error}
+                                </div>
                             )}
-                        </Button>
-                    </form>
 
-                    <p className="text-center text-base text-gray-600 dark:text-gray-400">
-                        Already have an account?{' '}
-                        <Link
-                            href="/login"
-                            className="font-semibold text-gray-900 dark:text-white hover:underline"
-                        >
-                            Sign in
-                        </Link>
-                    </p>
+                            <Button type="submit" disabled={loading} className="w-full h-12 bg-black text-white hover:bg-gray-800 text-base font-medium">
+                                {loading ? <Loader2 className="animate-spin" /> : 'Create Account'}
+                            </Button>
+                        </form>
+
+                        <p className="text-center text-sm text-gray-500">
+                            Already have an account?{' '}
+                            <Link href="/login" className="font-semibold text-black hover:underline">
+                                Sign in
+                            </Link>
+                        </p>
+                    </div>
+                </div>
+            </div>
+
+            {/* Right Side - Visual */}
+            <div className="hidden lg:block w-1/2 relative bg-black">
+                <Image
+                    src="/images/life.webp"
+                    alt="Signup Visual"
+                    fill
+                    className="object-cover opacity-80"
+                    priority
+                    unoptimized
+                />
+                <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent" />
+                <div className="absolute bottom-12 left-12 right-12 text-white">
+                    <h2 className="text-4xl font-bold mb-4">&quot;Design like a pro, instantly.&quot;</h2>
+                    <p className="text-lg text-gray-300">Get access to powerful tools and unlimited creativity.</p>
                 </div>
             </div>
         </div>

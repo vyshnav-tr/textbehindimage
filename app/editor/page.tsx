@@ -7,9 +7,10 @@ import { Input } from '@/components/ui/input';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Label } from '@/components/ui/label';
-import { removeBackground } from "@imgly/background-removal";
+// import { removeBackground } from "@imgly/background-removal";
 import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "@/components/ui/accordion";
-import { Trash2, Copy, Upload, Plus, Undo, Redo, Loader2, FlipHorizontal, FlipVertical, Check, Bold, Italic, Underline, Strikethrough, Type, CaseLower, CaseUpper, Sparkles, LogOut, User as UserIcon } from 'lucide-react';
+import { Check, Download, Plus, Redo, Trash2, Type, Undo, Upload, Loader2, Sparkles, Crown, Coins, Infinity as InfinityIcon, User as UserIcon, LogOut, Copy, FlipHorizontal, FlipVertical, Bold, Italic, Underline, Strikethrough, CaseUpper, CaseLower } from 'lucide-react';
+import confetti from 'canvas-confetti';
 import { motion } from "framer-motion";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -28,9 +29,12 @@ import {
 import { Avatar, AvatarImage, AvatarFallback } from '@/components/ui/avatar';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
+import NextImage from 'next/image';
 import { auth } from '@/app/firebase';
 import { PricingDialog } from '@/components/PricingDialog';
-import { Crown, Coins, Infinity as InfinityIcon } from 'lucide-react';
+
+import { logAnalyticsEvent } from '@/app/utils/analytics';
 
 interface GoogleFont {
     family: string;
@@ -46,6 +50,83 @@ interface FontSelectorProps {
     onChange: (font: string) => void;
     fonts: string[];
 }
+
+
+
+interface FilterSettings {
+    filter: string;
+    intensity: number;
+    saturation: number;
+    hue: number;
+    exposure: number;
+    highlights: number;
+    shadows: number;
+    temperature: number;
+    sharpen: number;
+}
+
+// New comprehensive filter builder
+const buildFilterString = (settings: FilterSettings) => {
+    const filters: string[] = [];
+
+    // Basic filter (if not 'none')
+    if (settings.filter !== 'none') {
+        switch (settings.filter) {
+            case 'brightness':
+                filters.push(`brightness(${settings.intensity}%)`);
+                break;
+            case 'contrast':
+                filters.push(`contrast(${settings.intensity}%)`);
+                break;
+            case 'grayscale':
+                filters.push(`grayscale(${settings.intensity}%)`);
+                break;
+            case 'sepia':
+                filters.push(`sepia(${settings.intensity}%)`);
+                break;
+            case 'blur':
+                filters.push(`blur(${settings.intensity / 10}px)`);
+                break;
+        }
+    }
+
+    // Color Adjustments
+    if (settings.saturation !== 0) {
+        filters.push(`saturate(${100 + settings.saturation}%)`);
+    }
+    if (settings.hue !== 0) {
+        filters.push(`hue-rotate(${settings.hue}deg)`);
+    }
+
+    // Lighting Adjustments
+    if (settings.exposure !== 0) {
+        filters.push(`brightness(${100 + settings.exposure}%)`);
+    }
+    if (settings.highlights !== 0 || settings.shadows !== 0) {
+        // Note: CSS filters don't have direct shadows/highlights control
+        // We approximate with brightness/contrast
+        const brightnessAdjust = (settings.highlights + settings.shadows) / 2;
+        const contrastAdjust = settings.highlights - settings.shadows;
+        if (brightnessAdjust !== 0) filters.push(`brightness(${100 + brightnessAdjust}%)`);
+        if (contrastAdjust !== 0) filters.push(`contrast(${100 + contrastAdjust}%)`);
+    }
+
+    // Temperature (approximation using hue-rotate and saturation)
+    if (settings.temperature !== 0) {
+        // Warm: orange tint, Cool: blue tint
+        const tempHue = settings.temperature * 0.3; // Scale down
+        const tempSat = Math.abs(settings.temperature) * 0.2;
+        filters.push(`hue-rotate(${tempHue}deg)`);
+        filters.push(`saturate(${100 + tempSat}%)`);
+    }
+
+    // Sharpen (using contrast as approximation since CSS doesn't have direct sharpen)
+    if (settings.sharpen !== 0) {
+        filters.push(`contrast(${100 + settings.sharpen}%)`);
+    }
+
+    return filters.length > 0 ? filters.join(' ') : 'none';
+};
 
 const FontSelector = ({ value, onChange, fonts }: FontSelectorProps) => {
     const [searchTerm, setSearchTerm] = useState('');
@@ -104,7 +185,7 @@ const FontSelector = ({ value, onChange, fonts }: FontSelectorProps) => {
                 }, 100);
             }
         }
-    }, [isOpen]);
+    }, [isOpen, value, filteredFonts, displayLimit]);
 
 
     const handleFontSelect = (font: string) => {
@@ -263,11 +344,21 @@ const ImageEditorPage = () => {
     const [isDragOver, setIsDragOver] = useState(false);
 
     // Credit System State
-    const [credits, setCredits] = useState(0);
+    const [credits, setCredits] = useState<number>(0);
     const [subscriptionStatus, setSubscriptionStatus] = useState('free');
+    const [dodoCustomerId, setDodoCustomerId] = useState<string | undefined>(undefined);
+    const [dodoSubscriptionId, setDodoSubscriptionId] = useState<string | undefined>(undefined);
+    const [subscriptionInterval, setSubscriptionInterval] = useState<string | undefined>(undefined);
     const [showPricingDialog, setShowPricingDialog] = useState(false);
+    const [isCreditsLoading, setIsCreditsLoading] = useState(true);
+    const [backgroundRemovalProgress, setBackgroundRemovalProgress] = useState(0);
+    const [loadingStatus, setLoadingStatus] = useState('Auto editing...');
 
     const router = useRouter();
+
+    useEffect(() => {
+        logAnalyticsEvent('page_view', { page_title: 'Editor Page' });
+    }, []);
 
     useEffect(() => {
         const unsubscribe = onAuthStateChanged(auth, (user) => {
@@ -275,11 +366,18 @@ const ImageEditorPage = () => {
                 router.push('/');
             } else {
                 // Fetch credits
+                setIsCreditsLoading(true);
                 fetch(`/api/user/credits?uid=${user.uid}`)
                     .then(res => res.json())
                     .then(data => {
                         setCredits(data.credits);
                         setSubscriptionStatus(data.subscriptionStatus);
+                        setDodoCustomerId(data.dodoCustomerId);
+                        setDodoSubscriptionId(data.dodoSubscriptionId);
+                        setSubscriptionInterval(data.subscriptionInterval);
+                    })
+                    .finally(() => {
+                        setIsCreditsLoading(false);
                     });
             }
         });
@@ -297,6 +395,38 @@ const ImageEditorPage = () => {
                     .then(data => {
                         setCredits(data.credits);
                         setSubscriptionStatus(data.subscriptionStatus);
+                        setDodoCustomerId(data.dodoCustomerId);
+                        setDodoSubscriptionId(data.dodoSubscriptionId);
+                        setSubscriptionInterval(data.subscriptionInterval);
+                        setSubscriptionInterval(data.subscriptionInterval);
+
+                        // Trigger confetti
+                        const duration = 3 * 1000;
+                        const animationEnd = Date.now() + duration;
+                        const defaults = { startVelocity: 30, spread: 360, ticks: 60, zIndex: 0 };
+
+                        const randomInRange = (min: number, max: number) => Math.random() * (max - min) + min;
+
+                        const interval: NodeJS.Timeout = setInterval(function () {
+                            const timeLeft = animationEnd - Date.now();
+
+                            if (timeLeft <= 0) {
+                                return clearInterval(interval);
+                            }
+
+                            const particleCount = 50 * (timeLeft / duration);
+                            confetti({
+                                ...defaults,
+                                particleCount,
+                                origin: { x: randomInRange(0.1, 0.3), y: Math.random() - 0.2 }
+                            });
+                            confetti({
+                                ...defaults,
+                                particleCount,
+                                origin: { x: randomInRange(0.7, 0.9), y: Math.random() - 0.2 }
+                            });
+                        }, 250);
+
                         // Clear URL param
                         window.history.replaceState({}, '', '/editor');
                     });
@@ -318,7 +448,7 @@ const ImageEditorPage = () => {
         // Moved auth check to the combined effect above
     }, [router]);
 
-    const extractColors = (imageUrl: string) => {
+    const extractColors = useCallback((imageUrl: string) => {
         const img = new Image();
         img.crossOrigin = 'Anonymous';
         img.src = imageUrl;
@@ -402,9 +532,9 @@ const ImageEditorPage = () => {
             // User asked for "auto picked", so let's stick to what's in the image.
             // But maybe ensure we have at least some colors.
 
-            setDominantColors(distinctColors);
+            setDominantColors(sortedColors.slice(0, 5).map(c => c.hex));
         };
-    };
+    }, [setDominantColors]);
     const [flipHorizontal, setFlipHorizontal] = useState(false);
     const [flipVertical, setFlipVertical] = useState(false);
 
@@ -417,7 +547,24 @@ const ImageEditorPage = () => {
     const toggleFlipVertical = () => {
         setFlipVertical(!flipVertical);
     };
-    const addNewItem = (width = 500, height = 500) => {
+
+    const handleProFeature = (callback: () => void) => {
+        if (subscriptionStatus === 'active') {
+            callback();
+        } else {
+            setShowPricingDialog(true);
+        }
+    };
+
+    const addToHistory = useCallback((newItems: TextItem[]) => {
+        const newHistory = history.slice(0, historyIndex + 1);
+        newHistory.push(newItems);
+        setHistory(newHistory);
+        setHistoryIndex(newHistory.length - 1);
+    }, [history, historyIndex]);
+
+
+    const addNewItem = useCallback((width = 500, height = 500) => {
         const newItem: TextItem = {
             id: Date.now(),
             text: 'Sample Text',
@@ -457,7 +604,7 @@ const ImageEditorPage = () => {
         };
         setItems(prevItems => [...prevItems, newItem]);
         addToHistory([...items, newItem]);
-    };
+    }, [items, addToHistory]);
     const toggleForeground = (id: number) => {
         const updatedItems = items.map(item =>
             item.id === id ? { ...item, isForeground: !item.isForeground } : item
@@ -466,11 +613,13 @@ const ImageEditorPage = () => {
         addToHistory(updatedItems);
     };
     const toggleGradient = (id: number) => {
-        const updatedItems = items.map(item =>
-            item.id === id ? { ...item, useGradient: !item.useGradient } : item
-        );
-        setItems(updatedItems);
-        addToHistory(updatedItems);
+        handleProFeature(() => {
+            const updatedItems = items.map(item =>
+                item.id === id ? { ...item, useGradient: !item.useGradient } : item
+            );
+            setItems(updatedItems);
+            addToHistory(updatedItems);
+        });
     };
 
     const toggleFlipHorizontalText = (id: number) => {
@@ -497,6 +646,19 @@ const ImageEditorPage = () => {
         addToHistory(updatedItems);
     };
     const updateItem = (id: number, field: keyof TextItem, value: TextItem[keyof TextItem]) => {
+        const proFields: (keyof TextItem)[] = ['extrusionDepth', 'extrusionColor', 'extrusionAngle', 'curveStrength', 'skewX', 'skewY', 'letterSpacing'];
+
+        if (proFields.includes(field)) {
+            handleProFeature(() => {
+                const updatedItems = items.map(item =>
+                    item.id === id ? { ...item, [field]: value } : item
+                );
+                setItems(updatedItems);
+                addToHistory(updatedItems);
+            });
+            return;
+        }
+
         const updatedItems = items.map(item =>
             item.id === id ? { ...item, [field]: value } : item
         );
@@ -520,26 +682,21 @@ const ImageEditorPage = () => {
         }
     };
 
-    const addToHistory = (newItems: TextItem[]) => {
-        const newHistory = history.slice(0, historyIndex + 1);
-        newHistory.push(newItems);
-        setHistory(newHistory);
-        setHistoryIndex(newHistory.length - 1);
-    };
 
-    const undo = () => {
+
+    const undo = useCallback(() => {
         if (historyIndex > 0) {
             setHistoryIndex(historyIndex - 1);
             setItems(history[historyIndex - 1]);
         }
-    };
+    }, [history, historyIndex]);
 
-    const redo = () => {
+    const redo = useCallback(() => {
         if (historyIndex < history.length - 1) {
             setHistoryIndex(historyIndex + 1);
             setItems(history[historyIndex + 1]);
         }
-    };
+    }, [history, historyIndex]);
 
     // Keyboard shortcuts for undo/redo
     useEffect(() => {
@@ -560,30 +717,10 @@ const ImageEditorPage = () => {
 
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [historyIndex, history]);
+    }, [historyIndex, history, redo, undo]);
 
     // Paste functionality for Ctrl+V / Cmd+V
-    useEffect(() => {
-        const handlePaste = async (e: ClipboardEvent) => {
-            const items = e.clipboardData?.items;
-            if (!items) return;
 
-            for (let i = 0; i < items.length; i++) {
-                const item = items[i];
-                if (item.type.startsWith('image/')) {
-                    e.preventDefault();
-                    const file = item.getAsFile();
-                    if (file) {
-                        await processImageFile(file);
-                    }
-                    break;
-                }
-            }
-        };
-
-        window.addEventListener('paste', handlePaste);
-        return () => window.removeEventListener('paste', handlePaste);
-    }, []);
 
 
     // ... existing code ...
@@ -622,7 +759,7 @@ const ImageEditorPage = () => {
     };
 
     // Unified function to process image files from any source
-    const processImageFile = async (file: File | Blob) => {
+    const processImageFile = useCallback(async (file: File | Blob) => {
         setIsLoading(true);
         setError(null);
 
@@ -681,6 +818,8 @@ const ImageEditorPage = () => {
                     }
 
                     setIsRemovingBackground(true);
+                    setBackgroundRemovalProgress(0);
+                    setLoadingStatus('Initializing...');
                     try {
                         // Deduct credit if not pro
                         if (subscriptionStatus !== 'active' && auth.currentUser) {
@@ -696,13 +835,28 @@ const ImageEditorPage = () => {
                             setCredits(data.remainingCredits);
                         }
 
-                        const removedBackground = await removeBackground(processedBlob);
+                        setLoadingStatus('Processing on server...');
+                        const formData = new FormData();
+                        formData.append('image', processedBlob);
+
+                        const response = await fetch('/api/remove-bg', {
+                            method: 'POST',
+                            body: formData,
+                        });
+
+                        if (!response.ok) {
+                            const errorData = await response.json();
+                            throw new Error(errorData.error || 'Failed to remove background');
+                        }
+
+                        const removedBackground = await response.blob();
                         const url = URL.createObjectURL(removedBackground);
                         setProcessedImage(url);
                     } catch (err) {
                         console.error('Error removing background:', err);
                     } finally {
                         setIsRemovingBackground(false);
+                        setBackgroundRemovalProgress(0);
                     }
                 }
             };
@@ -711,7 +865,30 @@ const ImageEditorPage = () => {
             console.error('Error processing image:', err);
             setIsLoading(false);
         }
-    };
+    }, [subscriptionStatus, credits, addNewItem, extractColors]);
+
+    // Paste functionality for Ctrl+V / Cmd+V
+    useEffect(() => {
+        const handlePaste = async (e: ClipboardEvent) => {
+            const items = e.clipboardData?.items;
+            if (!items) return;
+
+            for (let i = 0; i < items.length; i++) {
+                const item = items[i];
+                if (item.type.startsWith('image/')) {
+                    e.preventDefault();
+                    const file = item.getAsFile();
+                    if (file) {
+                        await processImageFile(file);
+                    }
+                    break;
+                }
+            }
+        };
+
+        window.addEventListener('paste', handlePaste);
+        return () => window.removeEventListener('paste', handlePaste);
+    }, [processImageFile]);
 
     const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
         if (!e.target.files || e.target.files.length === 0) return;
@@ -754,18 +931,16 @@ const ImageEditorPage = () => {
 
     // ... rest of the code ...
 
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const _captureAndSaveImage = () => {
+    const captureAndSaveImage = () => {
         const canvas = canvasRef.current;
         if (canvas) {
             const dataUrl = canvas.toDataURL('image/png');
             const link = document.createElement('a');
-            link.download = 'edited_image.png';
+            link.download = 'text-behind-image.png';
             link.href = dataUrl;
             link.click();
         } else {
             console.error('Canvas is not available');
-            // Optionally, you can show an error message to the user here
         }
     };
 
@@ -864,69 +1039,6 @@ const ImageEditorPage = () => {
             default:
                 ctx.filter = 'none';
         }
-    };
-
-    // New comprehensive filter builder
-    const buildFilterString = (settings: typeof layerSettings.background) => {
-        const filters: string[] = [];
-
-        // Basic filter (if not 'none')
-        if (settings.filter !== 'none') {
-            switch (settings.filter) {
-                case 'brightness':
-                    filters.push(`brightness(${settings.intensity}%)`);
-                    break;
-                case 'contrast':
-                    filters.push(`contrast(${settings.intensity}%)`);
-                    break;
-                case 'grayscale':
-                    filters.push(`grayscale(${settings.intensity}%)`);
-                    break;
-                case 'sepia':
-                    filters.push(`sepia(${settings.intensity}%)`);
-                    break;
-                case 'blur':
-                    filters.push(`blur(${settings.intensity / 10}px)`);
-                    break;
-            }
-        }
-
-        // Color Adjustments
-        if (settings.saturation !== 0) {
-            filters.push(`saturate(${100 + settings.saturation}%)`);
-        }
-        if (settings.hue !== 0) {
-            filters.push(`hue-rotate(${settings.hue}deg)`);
-        }
-
-        // Lighting Adjustments
-        if (settings.exposure !== 0) {
-            filters.push(`brightness(${100 + settings.exposure}%)`);
-        }
-        if (settings.highlights !== 0 || settings.shadows !== 0) {
-            // Note: CSS filters don't have direct shadows/highlights control
-            // We approximate with brightness/contrast
-            const brightnessAdjust = (settings.highlights + settings.shadows) / 2;
-            const contrastAdjust = settings.highlights - settings.shadows;
-            if (brightnessAdjust !== 0) filters.push(`brightness(${100 + brightnessAdjust}%)`);
-            if (contrastAdjust !== 0) filters.push(`contrast(${100 + contrastAdjust}%)`);
-        }
-
-        // Temperature (approximation using hue-rotate and saturation)
-        if (settings.temperature !== 0) {
-            // Warm: orange tint, Cool: blue tint
-            const tempHue = settings.temperature * 0.3; // Scale down
-            const tempSat = Math.abs(settings.temperature) * 0.2;
-            filters.push(`hue-rotate(${tempHue}deg)`);
-            filters.push(`saturate(${100 + tempSat}%)`);
-        }
-
-        // Sharpen (using contrast as approximation since CSS doesn't have direct sharpen)
-        if (settings.sharpen !== 0) {
-            filters.push(`contrast(${100 + settings.sharpen}%)`);
-        }
-
-        return filters.length > 0 ? filters.join(' ') : 'none';
     };
 
     // Helper to draw vignette overlay
@@ -1315,11 +1427,41 @@ const ImageEditorPage = () => {
             <div className="flex-1 flex flex-col min-w-0">
                 {/* Header */}
                 <header className="h-16 bg-card border-b flex items-center justify-between px-4 lg:px-6 z-10">
-                    <h1 className="text-lg font-semibold tracking-tight">Text Behind Image</h1>
-
+                    <Link href="/" className="text-xl font-bold tracking-tighter flex items-center gap-2">
+                        <div className="relative h-6 w-32">
+                            <NextImage
+                                src="/images/wordmark.png"
+                                alt="TextBehindImage"
+                                fill
+                                className="object-contain dark:invert"
+                            />
+                        </div>
+                    </Link>
                     <div className="flex items-center gap-4">
+                        {/* Export Button */}
+                        {originalImage && (
+                            <Button
+                                size="sm"
+                                variant="default"
+                                className="hidden lg:flex bg-black hover:bg-black/90 dark:bg-white dark:hover:bg-white/90 text-white dark:text-black"
+                                onClick={() => {
+                                    logAnalyticsEvent('export_image');
+                                    captureAndSaveImage();
+                                }}
+                            >
+                                <Download className="w-4 h-4 lg:mr-2" />
+                                <span className="hidden lg:inline">Export</span>
+                            </Button>
+                        )}
+
                         {/* Credits & Upgrade */}
-                        {subscriptionStatus === 'active' ? (
+                        {isCreditsLoading ? (
+                            <div className="flex items-center gap-3">
+                                <div className="flex items-center bg-secondary px-3 py-1 rounded-full">
+                                    <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+                                </div>
+                            </div>
+                        ) : subscriptionStatus === 'active' ? (
                             <div className="flex items-center text-amber-500 font-medium bg-amber-500/10 px-3 py-1 rounded-full text-sm">
                                 <InfinityIcon className="w-4 h-4 mr-2" />
                                 Infinite Credits
@@ -1327,17 +1469,20 @@ const ImageEditorPage = () => {
                         ) : (
                             <div className="flex items-center gap-3">
                                 <div className="flex items-center text-muted-foreground text-sm bg-secondary px-3 py-1 rounded-full">
-                                    <Coins className="w-4 h-4 mr-2" />
-                                    {credits} Credits
+                                    <Coins className="w-4 h-4 mr-1.5 lg:mr-2" />
+                                    {credits} <span className="hidden lg:inline ml-1">Credits</span>
                                 </div>
                                 <Button
                                     size="sm"
                                     variant="default"
                                     className="bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white border-0"
-                                    onClick={() => setShowPricingDialog(true)}
+                                    onClick={() => {
+                                        logAnalyticsEvent('upgrade_click', { source: 'navbar' });
+                                        setShowPricingDialog(true);
+                                    }}
                                 >
-                                    <Crown className="w-4 h-4 mr-2" />
-                                    Upgrade
+                                    <Crown className="w-4 h-4 lg:mr-2" />
+                                    <span className="hidden lg:inline">Upgrade</span>
                                 </Button>
                             </div>
                         )}
@@ -1397,26 +1542,49 @@ const ImageEditorPage = () => {
 
                         {/* Floating Canvas Controls */}
                         {originalImage && (
-                            <div className="absolute top-6 left-1/2 transform -translate-x-1/2 bg-card border shadow-lg rounded-full px-4 py-2 flex items-center space-x-2 z-20">
-                                <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    className="h-8 w-8 rounded-full"
-                                    onClick={undo}
-                                    disabled={historyIndex <= 0}
-                                >
-                                    <Undo className="h-4 w-4" />
-                                </Button>
-                                <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    className="h-8 w-8 rounded-full"
-                                    onClick={redo}
-                                    disabled={historyIndex >= history.length - 1}
-                                >
-                                    <Redo className="h-4 w-4" />
-                                </Button>
-                            </div>
+                            <>
+                                <div className="absolute top-6 left-1/2 transform -translate-x-1/2 bg-card border shadow-lg rounded-full px-4 py-2 flex items-center space-x-2 z-20">
+                                    <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        className="h-8 w-8 rounded-full"
+                                        onClick={undo}
+                                        disabled={historyIndex <= 0}
+                                    >
+                                        <Undo className="h-4 w-4" />
+                                    </Button>
+                                    <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        className="h-8 w-8 rounded-full"
+                                        onClick={redo}
+                                        disabled={historyIndex >= history.length - 1}
+                                    >
+                                        <Redo className="h-4 w-4" />
+                                    </Button>
+                                </div>
+                                <div className="absolute top-6 right-6 z-20 flex items-center gap-2">
+                                    {/* Export Button - Mobile Only */}
+                                    <Button
+                                        variant="outline"
+                                        size="icon"
+                                        className="lg:hidden h-9 w-9 rounded-full bg-white/80 dark:bg-black/80 backdrop-blur-md border shadow-sm hover:bg-black hover:text-white hover:border-black dark:hover:bg-white dark:hover:text-black dark:hover:border-white transition-all duration-300"
+                                        onClick={captureAndSaveImage}
+                                    >
+                                        <Download className="h-4 w-4" />
+                                    </Button>
+
+                                    {/* Delete Button */}
+                                    <Button
+                                        variant="outline"
+                                        size="icon"
+                                        className="h-9 w-9 rounded-full bg-white/80 dark:bg-black/80 backdrop-blur-md border shadow-sm hover:bg-red-50 hover:text-red-600 hover:border-red-200 dark:hover:bg-red-950/30 dark:hover:text-red-400 dark:hover:border-red-900 transition-all duration-300"
+                                        onClick={_removeImage}
+                                    >
+                                        <Trash2 className="h-4 w-4" />
+                                    </Button>
+                                </div>
+                            </>
                         )}
 
                         {/* The Canvas */}
@@ -1427,18 +1595,101 @@ const ImageEditorPage = () => {
                         >
                             {originalImage ? (
                                 <canvas ref={canvasRef} className="max-w-full max-h-[calc(100vh-12rem)] object-contain block" />
+                            ) : isCreditsLoading ? (
+                                <div className="flex flex-col items-center justify-center w-full max-w-xl mx-auto p-12 min-h-[400px]">
+                                    <motion.div
+                                        initial={{ opacity: 0 }}
+                                        animate={{ opacity: 1 }}
+                                        transition={{ duration: 0.3 }}
+                                        className="flex flex-col items-center gap-4"
+                                    >
+                                        <Loader2 className="h-10 w-10 animate-spin text-primary" />
+                                        <p className="text-sm text-muted-foreground">Loading...</p>
+                                    </motion.div>
+                                </div>
+                            ) : credits > 0 || credits === -1 ? (
+                                <div className="flex flex-col items-center justify-center w-full max-w-xl mx-auto p-12">
+                                    <motion.div
+                                        initial={{ opacity: 0, y: 20 }}
+                                        animate={{ opacity: 1, y: 0 }}
+                                        transition={{ duration: 0.5 }}
+                                        className={`w-full relative group cursor-pointer rounded-3xl border-2 border-dashed transition-all duration-300 ease-in-out ${isDragOver
+                                            ? 'border-primary bg-primary/5 scale-[1.02]'
+                                            : 'border-gray-200 dark:border-gray-800 hover:border-gray-300 dark:hover:border-gray-700 bg-white/50 dark:bg-gray-900/50'
+                                            }`}
+                                        onClick={() => fileInputRef.current?.click()}
+                                        onDragEnter={handleDragEnter}
+                                        onDragLeave={handleDragLeave}
+                                        onDragOver={handleDragOver}
+                                        onDrop={handleDrop}
+                                    >
+                                        <div className="flex flex-col items-center justify-center py-16 px-8 text-center space-y-6">
+                                            <div className="relative w-20 h-20 rounded-2xl flex items-center justify-center bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-white group-hover:scale-110 transition-all duration-300">
+                                                <Upload className="w-10 h-10" strokeWidth={1.5} />
+                                                {isDragOver && (
+                                                    <motion.div
+                                                        className="absolute inset-0 rounded-2xl border-2 border-primary"
+                                                        initial={{ scale: 1, opacity: 1 }}
+                                                        animate={{ scale: 1.5, opacity: 0 }}
+                                                        transition={{ repeat: Infinity, duration: 1 }}
+                                                    />
+                                                )}
+                                            </div>
+
+                                            <div className="space-y-2 max-w-sm">
+                                                <h3 className="text-2xl font-bold tracking-tight text-gray-900 dark:text-white">
+                                                    {isDragOver ? 'Drop image here' : 'Upload an image'}
+                                                </h3>
+                                                <p className="text-base text-gray-500 dark:text-gray-400">
+                                                    Drag and drop, paste from clipboard, or click to browse
+                                                </p>
+                                            </div>
+
+                                            <div className="flex items-center gap-3 pt-2">
+                                                <Button size="lg" className="h-12 px-8 rounded-full font-medium text-base shadow-lg hover:shadow-xl transition-all duration-300 bg-black text-white hover:bg-gray-900 dark:bg-white dark:text-black dark:hover:bg-gray-100">
+                                                    Select Image
+                                                </Button>
+                                            </div>
+
+                                            <p className="text-xs text-gray-400 dark:text-gray-500 pt-4">
+                                                Supports JPG, PNG, WEBP • Processed locally, no size limit
+                                            </p>
+                                        </div>
+                                    </motion.div>
+                                </div>
                             ) : (
-                                <div className="text-center p-12 border-2 border-dashed border-muted-foreground/25 rounded-xl bg-card/50">
-                                    <div className="bg-muted rounded-full p-4 inline-flex mb-4">
-                                        <Upload className="h-8 w-8 text-muted-foreground" />
-                                    </div>
-                                    <h3 className="text-lg font-medium mb-1">No image selected</h3>
-                                    <p className="text-sm text-muted-foreground mb-4">
-                                        {isDragOver ? 'Drop your image here' : 'Upload, drag & drop, or paste (Ctrl+V) an image to start editing'}
-                                    </p>
-                                    <Button onClick={() => fileInputRef.current?.click()}>
-                                        Select Image
-                                    </Button>
+                                <div className="flex flex-col items-center justify-center w-full max-w-xl mx-auto p-12">
+                                    <motion.div
+                                        initial={{ opacity: 0, y: 20 }}
+                                        animate={{ opacity: 1, y: 0 }}
+                                        transition={{ duration: 0.5 }}
+                                        className="w-full relative rounded-3xl border-2 border-dashed border-amber-200 dark:border-amber-900/50 bg-amber-50/50 dark:bg-amber-950/10"
+                                    >
+                                        <div className="flex flex-col items-center justify-center py-16 px-8 text-center space-y-6">
+                                            <div className="relative w-20 h-20 rounded-2xl flex items-center justify-center bg-amber-100 dark:bg-amber-900/20 text-amber-600 dark:text-amber-500">
+                                                <Crown className="w-10 h-10" strokeWidth={1.5} />
+                                            </div>
+
+                                            <div className="space-y-2 max-w-sm">
+                                                <h3 className="text-2xl font-bold tracking-tight text-gray-900 dark:text-white">
+                                                    Out of Credits
+                                                </h3>
+                                                <p className="text-base text-gray-500 dark:text-gray-400">
+                                                    You need credits to process new images. Upgrade your plan to continue creating.
+                                                </p>
+                                            </div>
+
+                                            <div className="flex items-center gap-3 pt-2">
+                                                <Button
+                                                    size="lg"
+                                                    onClick={() => setShowPricingDialog(true)}
+                                                    className="h-12 px-8 rounded-full font-medium text-base shadow-lg hover:shadow-xl transition-all duration-300 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white border-0"
+                                                >
+                                                    Go Unlimited
+                                                </Button>
+                                            </div>
+                                        </div>
+                                    </motion.div>
                                 </div>
                             )}
 
@@ -1450,11 +1701,28 @@ const ImageEditorPage = () => {
                                         animate={{ x: '100%' }}
                                         transition={{ repeat: Infinity, duration: 1.5, ease: "linear" }}
                                     />
-                                    <div className="relative z-10 flex flex-col items-center">
+                                    <div className="relative z-10 flex flex-col items-center gap-4">
                                         <Sparkles className="h-10 w-10 text-primary animate-pulse mb-3" />
                                         <p className="text-sm font-medium animate-pulse bg-clip-text text-transparent bg-gradient-to-r from-primary to-purple-600">
-                                            Something magical...
+                                            {isRemovingBackground ? loadingStatus : 'Something magical...'}
                                         </p>
+
+                                        {/* Progress Bar */}
+                                        {isRemovingBackground && backgroundRemovalProgress > 0 && (
+                                            <div className="w-64 mt-2">
+                                                <div className="w-full bg-secondary rounded-full h-2 overflow-hidden">
+                                                    <motion.div
+                                                        className="bg-gradient-to-r from-primary to-purple-600 h-full rounded-full"
+                                                        initial={{ width: 0 }}
+                                                        animate={{ width: `${backgroundRemovalProgress}%` }}
+                                                        transition={{ duration: 0.3 }}
+                                                    />
+                                                </div>
+                                                <p className="text-xs text-muted-foreground text-center mt-2">
+                                                    {backgroundRemovalProgress}%
+                                                </p>
+                                            </div>
+                                        )}
                                     </div>
                                 </div>
                             )}
@@ -1620,7 +1888,9 @@ const ImageEditorPage = () => {
                                                                 <div className="grid grid-cols-2 gap-2 pt-1">
                                                                     <div className="space-y-1 col-span-2">
                                                                         <div className="flex justify-between">
-                                                                            <Label className="text-[10px] text-muted-foreground">Curve Strength</Label>
+                                                                            <Label className="text-[10px] text-muted-foreground flex items-center">
+                                                                                Curve Strength <Crown className="w-3 h-3 text-amber-500 ml-1" />
+                                                                            </Label>
                                                                             <span className="text-[10px] text-muted-foreground">{item.curveStrength || 0}</span>
                                                                         </div>
                                                                         <Slider
@@ -1632,7 +1902,9 @@ const ImageEditorPage = () => {
                                                                         />
                                                                     </div>
                                                                     <div className="space-y-1">
-                                                                        <Label className="text-[10px] text-muted-foreground">Skew X</Label>
+                                                                        <Label className="text-[10px] text-muted-foreground flex items-center">
+                                                                            Skew X <Crown className="w-3 h-3 text-amber-500 ml-1" />
+                                                                        </Label>
                                                                         <Slider
                                                                             value={[item.skewX || 0]}
                                                                             onValueChange={([val]) => updateItem(item.id, 'skewX', val)}
@@ -1642,7 +1914,9 @@ const ImageEditorPage = () => {
                                                                         />
                                                                     </div>
                                                                     <div className="space-y-1">
-                                                                        <Label className="text-[10px] text-muted-foreground">Skew Y</Label>
+                                                                        <Label className="text-[10px] text-muted-foreground flex items-center">
+                                                                            Skew Y <Crown className="w-3 h-3 text-amber-500 ml-1" />
+                                                                        </Label>
                                                                         <Slider
                                                                             value={[item.skewY || 0]}
                                                                             onValueChange={([val]) => updateItem(item.id, 'skewY', val)}
@@ -1807,7 +2081,9 @@ const ImageEditorPage = () => {
                                                                     </div>
                                                                     <div className="space-y-1 col-span-2">
                                                                         <div className="flex items-center justify-between">
-                                                                            <Label className="text-[10px] text-muted-foreground">Letter Spacing</Label>
+                                                                            <Label className="text-[10px] text-muted-foreground flex items-center">
+                                                                                Letter Spacing <Crown className="w-3 h-3 text-amber-500 ml-1" />
+                                                                            </Label>
                                                                             <span className="text-[10px] text-muted-foreground">{item.letterSpacing}px</span>
                                                                         </div>
                                                                         <Slider
@@ -1871,7 +2147,9 @@ const ImageEditorPage = () => {
                                                                                 checked={item.useGradient}
                                                                                 onCheckedChange={() => toggleGradient(item.id)}
                                                                             />
-                                                                            <Label htmlFor={`gradient-${item.id}`} className="text-xs font-medium">Gradient Overlay</Label>
+                                                                            <Label htmlFor={`gradient-${item.id}`} className="text-xs font-medium flex items-center">
+                                                                                Gradient Overlay <Crown className="w-3 h-3 text-amber-500 ml-1" />
+                                                                            </Label>
                                                                         </div>
                                                                     </div>
 
@@ -2064,7 +2342,9 @@ const ImageEditorPage = () => {
                                                                             checked={(item.extrusionDepth || 0) > 0}
                                                                             onCheckedChange={(checked) => updateItem(item.id, 'extrusionDepth', checked ? 10 : 0)}
                                                                         />
-                                                                        <Label htmlFor={`extrusion-${item.id}`} className="text-xs font-medium">3D Effect</Label>
+                                                                        <Label htmlFor={`extrusion-${item.id}`} className="text-xs font-medium flex items-center">
+                                                                            3D Effect <Crown className="w-3 h-3 text-amber-500 ml-1" />
+                                                                        </Label>
                                                                     </div>
                                                                 </div>
 
@@ -2247,6 +2527,130 @@ const ImageEditorPage = () => {
 
                                             <Separator />
 
+                                            {/* Advanced Adjustments */}
+                                            <div className="space-y-4">
+                                                <Label className="text-xs font-medium">Adjustments</Label>
+
+                                                {/* Vignette */}
+                                                <div className="space-y-1">
+                                                    <div className="flex justify-between">
+                                                        <Label className="text-[10px] text-muted-foreground flex items-center">
+                                                            Vignette <Crown className="w-3 h-3 text-amber-500 ml-1" />
+                                                        </Label>
+                                                        <span className="text-[10px] text-muted-foreground">{layerSettings[activeImageTab].vignette}</span>
+                                                    </div>
+                                                    <Slider
+                                                        value={[layerSettings[activeImageTab].vignette]}
+                                                        onValueChange={([val]) => handleProFeature(() => setLayerSettings(prev => ({
+                                                            ...prev,
+                                                            [activeImageTab]: { ...prev[activeImageTab], vignette: val }
+                                                        })))}
+                                                        max={100}
+                                                        step={1}
+                                                    />
+                                                </div>
+
+                                                {/* Noise */}
+                                                <div className="space-y-1">
+                                                    <div className="flex justify-between">
+                                                        <Label className="text-[10px] text-muted-foreground flex items-center">
+                                                            Noise <Crown className="w-3 h-3 text-amber-500 ml-1" />
+                                                        </Label>
+                                                        <span className="text-[10px] text-muted-foreground">{layerSettings[activeImageTab].noise}</span>
+                                                    </div>
+                                                    <Slider
+                                                        value={[layerSettings[activeImageTab].noise]}
+                                                        onValueChange={([val]) => handleProFeature(() => setLayerSettings(prev => ({
+                                                            ...prev,
+                                                            [activeImageTab]: { ...prev[activeImageTab], noise: val }
+                                                        })))}
+                                                        max={100}
+                                                        step={1}
+                                                    />
+                                                </div>
+
+                                                {/* Sharpen */}
+                                                <div className="space-y-1">
+                                                    <div className="flex justify-between">
+                                                        <Label className="text-[10px] text-muted-foreground flex items-center">
+                                                            Sharpen <Crown className="w-3 h-3 text-amber-500 ml-1" />
+                                                        </Label>
+                                                        <span className="text-[10px] text-muted-foreground">{layerSettings[activeImageTab].sharpen}</span>
+                                                    </div>
+                                                    <Slider
+                                                        value={[layerSettings[activeImageTab].sharpen]}
+                                                        onValueChange={([val]) => handleProFeature(() => setLayerSettings(prev => ({
+                                                            ...prev,
+                                                            [activeImageTab]: { ...prev[activeImageTab], sharpen: val }
+                                                        })))}
+                                                        max={100}
+                                                        step={1}
+                                                    />
+                                                </div>
+
+                                                {/* Shadows */}
+                                                <div className="space-y-1">
+                                                    <div className="flex justify-between">
+                                                        <Label className="text-[10px] text-muted-foreground flex items-center">
+                                                            Shadows <Crown className="w-3 h-3 text-amber-500 ml-1" />
+                                                        </Label>
+                                                        <span className="text-[10px] text-muted-foreground">{layerSettings[activeImageTab].shadows}</span>
+                                                    </div>
+                                                    <Slider
+                                                        value={[layerSettings[activeImageTab].shadows]}
+                                                        onValueChange={([val]) => handleProFeature(() => setLayerSettings(prev => ({
+                                                            ...prev,
+                                                            [activeImageTab]: { ...prev[activeImageTab], shadows: val }
+                                                        })))}
+                                                        min={-100}
+                                                        max={100}
+                                                        step={1}
+                                                    />
+                                                </div>
+
+                                                {/* Highlights */}
+                                                <div className="space-y-1">
+                                                    <div className="flex justify-between">
+                                                        <Label className="text-[10px] text-muted-foreground flex items-center">
+                                                            Highlights <Crown className="w-3 h-3 text-amber-500 ml-1" />
+                                                        </Label>
+                                                        <span className="text-[10px] text-muted-foreground">{layerSettings[activeImageTab].highlights}</span>
+                                                    </div>
+                                                    <Slider
+                                                        value={[layerSettings[activeImageTab].highlights]}
+                                                        onValueChange={([val]) => handleProFeature(() => setLayerSettings(prev => ({
+                                                            ...prev,
+                                                            [activeImageTab]: { ...prev[activeImageTab], highlights: val }
+                                                        })))}
+                                                        min={-100}
+                                                        max={100}
+                                                        step={1}
+                                                    />
+                                                </div>
+
+                                                {/* Temperature */}
+                                                <div className="space-y-1">
+                                                    <div className="flex justify-between">
+                                                        <Label className="text-[10px] text-muted-foreground flex items-center">
+                                                            Temperature <Crown className="w-3 h-3 text-amber-500 ml-1" />
+                                                        </Label>
+                                                        <span className="text-[10px] text-muted-foreground">{layerSettings[activeImageTab].temperature}</span>
+                                                    </div>
+                                                    <Slider
+                                                        value={[layerSettings[activeImageTab].temperature]}
+                                                        onValueChange={([val]) => handleProFeature(() => setLayerSettings(prev => ({
+                                                            ...prev,
+                                                            [activeImageTab]: { ...prev[activeImageTab], temperature: val }
+                                                        })))}
+                                                        min={-100}
+                                                        max={100}
+                                                        step={1}
+                                                    />
+                                                </div>
+                                            </div>
+
+                                            <Separator />
+
                                             {/* Global Transforms */}
                                             <div className="space-y-3">
                                                 <Label className="text-xs font-medium">Global Transform</Label>
@@ -2278,19 +2682,24 @@ const ImageEditorPage = () => {
                         </div>
                     )}
                 </main>
-            </div>
+            </div >
 
             {/* Hidden Input */}
-            <input
+            < input
                 ref={fileInputRef}
                 type="file"
                 className="hidden"
-                onChange={handleImageUpload}
+                onChange={(e) => {
+                    if (e.target.files && e.target.files.length > 0) {
+                        logAnalyticsEvent('image_upload');
+                        handleImageUpload(e);
+                    }
+                }}
                 accept="image/*"
             />
 
             {/* Dialogs */}
-            <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
+            < AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog} >
                 <AlertDialogContent>
                     <AlertDialogHeader>
                         <AlertDialogTitle>Are you sure?</AlertDialogTitle>
@@ -2303,7 +2712,7 @@ const ImageEditorPage = () => {
                         <AlertDialogAction onClick={confirmRemoveImage}>Continue</AlertDialogAction>
                     </AlertDialogFooter>
                 </AlertDialogContent>
-            </AlertDialog>
+            </AlertDialog >
 
             <AlertDialog open={showClearAllDialog} onOpenChange={setShowClearAllDialog}>
                 <AlertDialogContent>
@@ -2323,8 +2732,12 @@ const ImageEditorPage = () => {
                 open={showPricingDialog}
                 onOpenChange={setShowPricingDialog}
                 uid={auth.currentUser?.uid}
+                subscriptionStatus={subscriptionStatus}
+                dodoCustomerId={dodoCustomerId}
+                dodoSubscriptionId={dodoSubscriptionId}
+                subscriptionInterval={subscriptionInterval}
             />
-        </div>
+        </div >
     );
 };
 
