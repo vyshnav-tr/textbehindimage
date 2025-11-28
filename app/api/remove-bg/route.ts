@@ -53,26 +53,24 @@ export async function POST(req: NextRequest) {
         let finalBuffer: Buffer;
 
         if (isResized) {
-            console.log('Upscaling mask to original resolution...');
+            console.log(`Upscaling mask to ${originalWidth}x${originalHeight}...`);
 
-            // 1. Load the processed (small) image
-            // 2. Extract its alpha channel (the mask)
-            // 3. Resize that mask to the original image dimensions
+            // 1. Extract alpha channel (mask) from the processed low-res image
+            // 2. Resize it to match original dimensions
             const maskBuffer = await sharp(resultBuffer)
                 .ensureAlpha()
-                .extractChannel(3) // Extract alpha channel
+                .extractChannel(3)
                 .resize(originalWidth, originalHeight, {
-                    fit: 'fill' // Force exact match to original dimensions
+                    fit: 'fill'
                 })
                 .toBuffer();
 
-            // 4. Apply the upscaled mask to the original high-res image
+            // 3. Apply the mask as the alpha channel of the original image
+            // We strip any existing alpha from original, and append our new mask
             finalBuffer = await sharp(originalBuffer)
-                .ensureAlpha()
-                .composite([{
-                    input: maskBuffer,
-                    blend: 'dest-in'
-                }])
+                .toColorspace('srgb') // Ensure consistent color space
+                .removeAlpha()        // Remove existing alpha if any
+                .joinChannel(maskBuffer) // Add our generated mask as the alpha channel
                 .png()
                 .toBuffer();
         } else {

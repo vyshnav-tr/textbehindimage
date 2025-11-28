@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Label } from '@/components/ui/label';
-// import { removeBackground } from "@imgly/background-removal";
+import { removeBackground } from "@imgly/background-removal";
 import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "@/components/ui/accordion";
 import { Check, Download, Plus, Redo, Trash2, Type, Undo, Upload, Loader2, Sparkles, Crown, Coins, Infinity as InfinityIcon, User as UserIcon, LogOut, Copy, FlipHorizontal, FlipVertical, Bold, Italic, Underline, Strikethrough, CaseUpper, CaseLower } from 'lucide-react';
 import confetti from 'canvas-confetti';
@@ -835,22 +835,18 @@ const ImageEditorPage = () => {
                             setCredits(data.remainingCredits);
                         }
 
-                        setLoadingStatus('Processing on server...');
-                        const formData = new FormData();
-                        formData.append('image', processedBlob);
+                        setLoadingStatus('Removing background (local)...');
 
-                        const response = await fetch('/api/remove-bg', {
-                            method: 'POST',
-                            body: formData,
+                        // Use client-side background removal
+                        const blob = await removeBackground(processedBlob, {
+                            progress: (key, current, total) => {
+                                const progress = Math.round((current / total) * 100);
+                                setBackgroundRemovalProgress(progress);
+                                setLoadingStatus(`Processing: ${progress}%`);
+                            }
                         });
 
-                        if (!response.ok) {
-                            const errorData = await response.json();
-                            throw new Error(errorData.error || 'Failed to remove background');
-                        }
-
-                        const removedBackground = await response.blob();
-                        const url = URL.createObjectURL(removedBackground);
+                        const url = URL.createObjectURL(blob);
                         setProcessedImage(url);
                     } catch (err) {
                         console.error('Error removing background:', err);
