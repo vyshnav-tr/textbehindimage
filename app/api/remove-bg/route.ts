@@ -24,7 +24,7 @@ export async function POST(req: NextRequest) {
         let isResized = false;
 
         // Resize if image is too large (e.g., > 1500px width)
-        // This significantly speeds up the background removal process (seconds vs minutes)
+        // This significantly speeds up the background removal process
         if (originalWidth > 1500) {
             console.log(`Resizing image from ${originalWidth}px to 1500px for processing`);
             processingBuffer = await originalImage
@@ -38,66 +38,46 @@ export async function POST(req: NextRequest) {
         console.log('Starting background removal...');
         const startTime = Date.now();
 
-        // Perform background removal to get the MASK only (faster)
-        const maskBlob = await removeBackground(blob, {
+        // Perform background removal
+        // We request PNG so we don't have to deal with raw buffer dimension matching issues
+        const resultBlob = await removeBackground(blob, {
             output: {
-                format: 'image/x-alpha8', // Request only the alpha channel
+                format: 'image/png',
                 quality: 0.8
             }
         });
-        const maskBuffer = Buffer.from(await maskBlob.arrayBuffer());
+        const resultBuffer = Buffer.from(await resultBlob.arrayBuffer());
 
-        console.log(`Background removal (mask generation) took ${(Date.now() - startTime) / 1000}s`);
+        console.log(`Background removal took ${(Date.now() - startTime) / 1000}s`);
 
         let finalBuffer: Buffer;
 
         if (isResized) {
             console.log('Upscaling mask to original resolution...');
 
-            // Upscale the low-res mask to match original dimensions
-            const upscaledMask = await sharp(maskBuffer, {
-                raw: {
-                    width: 1500, // The width we resized to (approx, need to be exact if aspect ratio changed)
-                    height: Math.round(1500 * (originalHeight / originalWidth)), // Calculate expected height
-                    channels: 1
-                }
-            })
+            // 1. Load the processed (small) image
+            // 2. Extract its alpha channel (the mask)
+            // 3. Resize that mask to the original image dimensions
+            const maskBuffer = await sharp(resultBuffer)
+                .ensureAlpha()
+                .extractChannel(3) // Extract alpha channel
                 .resize(originalWidth, originalHeight, {
-                    fit: 'fill' // Force exact match
+                    fit: 'fill' // Force exact match to original dimensions
                 })
                 .toBuffer();
 
-            // Apply the upscaled mask to the original high-res image
-            finalBuffer = await sharp(originalBuffer)
-                .ensureAlpha()
-                .composite([{
-                    input: upscaledMask,
-                    blend: 'dest-in',
-                    raw: {
-                        width: originalWidth,
-                        height: originalHeight,
-                        channels: 1
-                    }
-                }])
-                .png()
-                .toBuffer();
-        } else {
-            // If no resize was needed, just apply the mask directly
-            // Note: maskBuffer is raw alpha data here because of 'image/x-alpha8'
-            // We need to be careful with sharp raw input
+            // 4. Apply the upscaled mask to the original high-res image
             finalBuffer = await sharp(originalBuffer)
                 .ensureAlpha()
                 .composite([{
                     input: maskBuffer,
-                    blend: 'dest-in',
-                    raw: {
-                        width: originalWidth,
-                        height: originalHeight,
-                        channels: 1
-                    }
+                    blend: 'dest-in'
                 }])
                 .png()
                 .toBuffer();
+        } else {
+            // If no resize was needed, the resultBuffer is already the full-res image with BG removed
+            finalBuffer = resultBuffer;
         }
 
         return new NextResponse(new Blob([new Uint8Array(finalBuffer)], { type: 'image/png' }), {
