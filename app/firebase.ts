@@ -14,10 +14,13 @@ const firebaseConfig = {
   measurementId: process.env.NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID
 };
 
+import { Firestore, getFirestore } from 'firebase/firestore';
+
 // Initialize Firebase only on client side
 let app: FirebaseApp;
 let analytics: Analytics | undefined;
 let auth: Auth;
+let db: Firestore;
 
 if (typeof window !== 'undefined') {
   try {
@@ -28,10 +31,12 @@ if (typeof window !== 'undefined') {
 
   analytics = getAnalytics(app);
   auth = getAuth(app);
+  db = getFirestore(app);
 } else {
   // Server-side: create a mock app object
   app = {} as FirebaseApp;
   auth = {} as Auth;
+  db = {} as Firestore;
 }
 
-export { app, analytics, auth };
+export { app, analytics, auth, db };

@@ -9,7 +9,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Label } from '@/components/ui/label';
 import { removeBackground } from "@imgly/background-removal";
 import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "@/components/ui/accordion";
-import { Check, Download, Plus, Redo, Trash2, Type, Undo, Upload, Loader2, Sparkles, Crown, Coins, Infinity as InfinityIcon, User as UserIcon, LogOut, Copy, FlipHorizontal, FlipVertical, Bold, Italic, Underline, Strikethrough, CaseUpper, CaseLower } from 'lucide-react';
+import { Check, Download, Plus, Redo, Trash2, Type, Undo, Upload, Loader2, Sparkles, Crown, Coins, Infinity as InfinityIcon, User as UserIcon, LogOut, Copy, FlipHorizontal, FlipVertical, Bold, Italic, Underline, Strikethrough, CaseUpper, CaseLower, MessageSquare } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { motion } from "framer-motion";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -133,6 +133,7 @@ const FontSelector = ({ value, onChange, fonts }: FontSelectorProps) => {
     const [isOpen, setIsOpen] = useState(false);
     const [displayLimit, setDisplayLimit] = useState(50);
     const observer = useRef<IntersectionObserver | null>(null);
+    const hasScrolledRef = useRef(false);
 
     const filteredFonts = fonts.filter(font =>
         font.toLowerCase().includes(searchTerm.toLowerCase())
@@ -169,18 +170,25 @@ const FontSelector = ({ value, onChange, fonts }: FontSelectorProps) => {
     }, [displayLimit, filteredFonts]);
 
     useEffect(() => {
-        if (isOpen && value) {
+        if (!isOpen) {
+            hasScrolledRef.current = false;
+            return;
+        }
+
+        if (isOpen && value && !hasScrolledRef.current) {
             const index = filteredFonts.findIndex(f => f === value);
             if (index !== -1) {
                 // Ensure it's rendered
                 if (index >= displayLimit) {
                     setDisplayLimit(index + 20);
+                    return;
                 }
                 // Scroll into view
                 setTimeout(() => {
                     const el = document.getElementById(`font-item-${value.replace(/\s+/g, '-')}`);
                     if (el) {
                         el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+                        hasScrolledRef.current = true;
                     }
                 }, 100);
             }
@@ -575,7 +583,7 @@ const ImageEditorPage = () => {
             useGradient: false,
             xPosition: Math.round(width / 2),
             yPosition: Math.round(height / 2),
-            textSize: Math.round(Math.min(width, height) / 4),
+            textSize: Math.round(Math.min(width, height) / 8),
             isBold: false,
             isItalic: false,
             isUnderline: false,
@@ -1498,19 +1506,42 @@ const ImageEditorPage = () => {
                                     )}
                                 </Button>
                             </PopoverTrigger>
-                            <PopoverContent className="w-56" align="end" forceMount>
-                                <div className="grid gap-4">
-                                    <div className="font-medium truncate">{auth.currentUser?.displayName || auth.currentUser?.email}</div>
-                                    <Button
-                                        variant="destructive"
-                                        className="w-full justify-start"
-                                        onClick={() => {
-                                            signOut(auth).then(() => router.push('/'));
-                                        }}
-                                    >
-                                        <LogOut className="mr-2 h-4 w-4" />
-                                        Log out
-                                    </Button>
+                            <PopoverContent className="w-64 p-4" align="end" forceMount>
+                                <div className="space-y-4">
+                                    <div className="flex items-center gap-3 pb-4 border-b">
+                                        <Avatar className="h-10 w-10 border">
+                                            <AvatarImage src={auth.currentUser?.photoURL || ''} alt={auth.currentUser?.displayName || ''} />
+                                            <AvatarFallback>{auth.currentUser?.displayName?.charAt(0) || <UserIcon className="h-5 w-5" />}</AvatarFallback>
+                                        </Avatar>
+                                        <div className="flex flex-col">
+                                            <span className="font-semibold text-sm">{auth.currentUser?.displayName || 'User'}</span>
+                                            <span className="text-xs text-muted-foreground truncate max-w-[150px]">{auth.currentUser?.email}</span>
+                                        </div>
+                                    </div>
+
+                                    <div className="space-y-1">
+                                        <Button
+                                            variant="ghost"
+                                            className="w-full justify-start h-9 px-2 text-sm font-normal"
+                                            onClick={() => router.push('/feedback')}
+                                        >
+                                            <MessageSquare className="mr-2 h-4 w-4" />
+                                            Feedback
+                                        </Button>
+                                    </div>
+
+                                    <div className="pt-2">
+                                        <Button
+                                            variant="destructive"
+                                            className="w-full justify-start h-9 px-2 text-sm font-normal bg-red-500 hover:bg-red-600 text-white"
+                                            onClick={() => {
+                                                signOut(auth).then(() => router.push('/'));
+                                            }}
+                                        >
+                                            <LogOut className="mr-2 h-4 w-4" />
+                                            Log out
+                                        </Button>
+                                    </div>
                                 </div>
                             </PopoverContent>
                         </Popover>

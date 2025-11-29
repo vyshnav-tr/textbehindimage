@@ -11,7 +11,7 @@ import {
     createUserWithEmailAndPassword,
     updateProfile
 } from 'firebase/auth';
-import { Loader2, ArrowLeft, Image as ImageIcon } from 'lucide-react';
+import { Loader2, ArrowLeft } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import Image from 'next/image';
@@ -104,8 +104,8 @@ export default function SignupPage() {
 
                 <div className="flex-1 flex flex-col justify-center max-w-md mx-auto w-full">
                     <div className="mb-8">
-                        <div className="w-10 h-10 bg-black rounded-xl flex items-center justify-center text-white mb-6">
-                            <ImageIcon size={20} />
+                        <div className="w-10 h-10 rounded-xl flex items-center justify-center mb-6">
+                            <Image src="/images/logo.png" alt="Logo" width={20} height={20} />
                         </div>
                         <h1 className="text-3xl font-bold tracking-tight text-black mb-2">Create an account</h1>
                         <p className="text-gray-500">Start creating stunning visuals today</p>
@@ -202,7 +202,7 @@ export default function SignupPage() {
             {/* Right Side - Visual */}
             <div className="hidden lg:block w-1/2 relative bg-black">
                 <Image
-                    src="/images/life.webp"
+                    src="/images/queen.webp"
                     alt="Signup Visual"
                     fill
                     className="object-cover opacity-80"
