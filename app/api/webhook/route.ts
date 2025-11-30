@@ -1,6 +1,11 @@
 import { NextResponse } from 'next/server';
 import { db } from '@/lib/firebase-admin';
 import { dodo } from '@/lib/dodo';
+import { auditSubscriptionWrite } from '@/lib/subscription-audit';
+
+const isLive =
+    process.env.DODO_PAYMENTS_ENV === 'live_mode' ||
+    process.env.NODE_ENV === 'production';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -31,8 +36,18 @@ export async function POST(req: Request) {
             timestamp: !!webhookHeaders['webhook-timestamp'],
         });
 
+        const webhookId = webhookHeaders['webhook-id'];
+        if (!webhookId) {
+            return NextResponse.json({ error: 'Missing webhook-id header' }, { status: 400 });
+        }
+
         const hasWebhookKey =
             !!(process.env.DODO_PAYMENTS_WEBHOOK_SECRET || process.env.DODO_PAYMENTS_WEBHOOK_KEY);
+
+        if (isLive && !hasWebhookKey) {
+            console.error('Dodo webhook secret not configured in production');
+            return NextResponse.json({ error: 'Server misconfigured' }, { status: 500 });
+        }
 
         let event: any; // eslint-disable-line @typescript-eslint/no-explicit-any
         if (hasWebhookKey) {
@@ -58,6 +73,25 @@ export async function POST(req: Request) {
 
         const data: any = // eslint-disable-line @typescript-eslint/no-explicit-any
             event?.data || event?.payload?.data || event;
+
+        // Idempotency: ensure each webhook-id is processed once
+        try {
+            // Use create to fail if the document already exists
+            // @ts-ignore - admin SDK provides create()
+            await db.collection('dodo_webhooks').doc(String(webhookId)).create({
+                createdAt: new Date().toISOString(),
+                type: type || 'unknown',
+                status: 'processing',
+            });
+        } catch (e: any) {
+            const msg = String(e?.message || '');
+            if (msg.includes('ALREADY_EXISTS') || msg.includes('already exists')) {
+                // Already processed; ack success
+                return NextResponse.json({ received: true, duplicate: true });
+            }
+            console.error('Idempotency create failed', e);
+            return NextResponse.json({ error: 'Temporary error' }, { status: 503 });
+        }
 
         if (type === 'subscription.active') {
             const subscription_id =
@@ -89,12 +123,45 @@ export async function POST(req: Request) {
                 }
             }
 
-            // Compute interval regardless
-            const interval = String(
-                data?.subscription_period_interval ||
-                data?.interval ||
-                'month'
-            ).toLowerCase();
+            // Compute interval with product mapping first (env-based), fallback to interval fields
+            let interval: string | undefined;
+            try {
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                const sub: any = subscription_id ? await dodo.subscriptions.retrieve(subscription_id) : undefined;
+
+                const monthly = process.env.NEXT_PUBLIC_DODO_PRODUCT_MONTHLY;
+                const yearly = process.env.NEXT_PUBLIC_DODO_PRODUCT_YEARLY;
+
+                const productIdCandidate =
+                    sub?.product_id ||
+                    sub?.product?.product_id ||
+                    sub?.product?.id ||
+                    sub?.productId ||
+                    sub?.price?.product_id ||
+                    sub?.price?.productId ||
+                    data?.product_id ||
+                    data?.product?.id;
+
+                if (productIdCandidate && monthly && String(productIdCandidate) === String(monthly)) {
+                    interval = 'month';
+                } else if (productIdCandidate && yearly && String(productIdCandidate) === String(yearly)) {
+                    interval = 'year';
+                } else {
+                    const rawInterval =
+                        sub?.price?.payment_frequency_interval ??
+                        sub?.price?.subscription_period_interval ??
+                        sub?.product?.price?.payment_frequency_interval ??
+                        sub?.product?.price?.subscription_period_interval ??
+                        sub?.subscription_period_interval ??
+                        sub?.interval ??
+                        data?.subscription_period_interval ??
+                        data?.interval;
+                    interval = rawInterval ? String(rawInterval).toLowerCase() : undefined;
+                }
+            } catch (e) {
+                console.warn('Unable to compute interval from subscription; falling back to event', e);
+                interval = (data?.subscription_period_interval || data?.interval || 'month')?.toLowerCase?.();
+            }
 
             // Fallback: try mapping by subscription_id if uid missing
             let targetUid = uid;
@@ -110,16 +177,75 @@ export async function POST(req: Request) {
             }
 
             if (targetUid && subscription_id) {
+                // Prefer recent plan change target within a short window to avoid reverting interval
+                let finalInterval = interval;
+                try {
+                    const userDocSnap = await db.collection('users').doc(String(targetUid)).get();
+                    if (userDocSnap.exists) {
+                        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                        const udata: any = userDocSnap.data();
+                        const lastPlanChangeAtStr = udata?.lastPlanChangeAt;
+                        const lastPlanChangeAtMs = lastPlanChangeAtStr ? Date.parse(lastPlanChangeAtStr) : NaN;
+                        const targetProductId = udata?.targetProductId;
+                        const within5m =
+                            lastPlanChangeAtStr &&
+                            !Number.isNaN(lastPlanChangeAtMs) &&
+                            Date.now() - lastPlanChangeAtMs < 5 * 60_000;
+
+                        if (within5m && targetProductId) {
+                            const monthly = process.env.NEXT_PUBLIC_DODO_PRODUCT_MONTHLY;
+                            const yearly = process.env.NEXT_PUBLIC_DODO_PRODUCT_YEARLY;
+                            if (monthly && String(targetProductId) === String(monthly)) {
+                                finalInterval = 'month';
+                            } else if (yearly && String(targetProductId) === String(yearly)) {
+                                finalInterval = 'year';
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.warn('Webhook interval override check failed (active)', e);
+                }
+
                 const update: Record<string, unknown> = {
                     subscriptionStatus: 'active',
                     dodoSubscriptionId: subscription_id,
                     credits: -1, // Unlimited
-                    subscriptionInterval: interval,
                 };
                 if (customer_id) {
                     update['dodoCustomerId'] = customer_id;
                 }
-                await db.collection('users').doc(targetUid).set(update, { merge: true });
+                if (finalInterval) {
+                    update['subscriptionInterval'] = finalInterval;
+                }
+                const targetRef = db.collection('users').doc(String(targetUid));
+                // Capture "before" snapshot for audit
+                let beforeAudit: Record<string, unknown> | null = null;
+                try {
+                    const beforeSnap = await targetRef.get();
+                    if (beforeSnap.exists) {
+                        const b: any = beforeSnap.data(); // eslint-disable-line @typescript-eslint/no-explicit-any
+                        beforeAudit = {
+                            subscriptionInterval: b?.subscriptionInterval ?? null,
+                            subscriptionStatus: b?.subscriptionStatus ?? null,
+                            dodoSubscriptionId: b?.dodoSubscriptionId ?? null,
+                        };
+                    }
+                } catch { }
+                await targetRef.set(update, { merge: true });
+                // Best-effort audit
+                await auditSubscriptionWrite(String(targetUid), {
+                    source: 'webhook',
+                    eventContext: { eventType: 'subscription.active', subscriptionId: subscription_id, customerId: customer_id || null },
+                    before: beforeAudit,
+                    after: update,
+                    mapping: {
+                        computedFinalInterval: finalInterval ?? null,
+                        originalInterval: interval ?? null,
+                        withinRecentPlanChangeWindow: typeof finalInterval !== 'undefined' && typeof interval !== 'undefined' ? finalInterval !== interval : null,
+                        monthlyEnv: process.env.NEXT_PUBLIC_DODO_PRODUCT_MONTHLY || null,
+                        yearlyEnv: process.env.NEXT_PUBLIC_DODO_PRODUCT_YEARLY || null,
+                    },
+                });
             } else {
                 console.warn('Missing identifiers on subscription.active', { uid, subscription_id, customer_id });
                 // Do not return 400 here; allow final 200 so Dodo doesn't hard-fail
@@ -166,13 +292,114 @@ export async function POST(req: Request) {
                 }
             }
 
+            // Compute interval with product mapping first (env-based), fallback to interval fields
+            let interval: string | undefined;
+            try {
+                // attempt to retrieve current subscription details to infer interval
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                const sub: any = subscription_id ? await dodo.subscriptions.retrieve(subscription_id) : undefined;
+
+                const monthly = process.env.NEXT_PUBLIC_DODO_PRODUCT_MONTHLY;
+                const yearly = process.env.NEXT_PUBLIC_DODO_PRODUCT_YEARLY;
+
+                const productIdCandidate =
+                    sub?.product_id ||
+                    sub?.product?.product_id ||
+                    sub?.product?.id ||
+                    sub?.productId ||
+                    sub?.price?.product_id ||
+                    sub?.price?.productId ||
+                    data?.product_id ||
+                    data?.product?.id;
+
+                if (productIdCandidate && monthly && String(productIdCandidate) === String(monthly)) {
+                    interval = 'month';
+                } else if (productIdCandidate && yearly && String(productIdCandidate) === String(yearly)) {
+                    interval = 'year';
+                } else {
+                    const rawInterval =
+                        sub?.price?.payment_frequency_interval ??
+                        sub?.price?.subscription_period_interval ??
+                        sub?.product?.price?.payment_frequency_interval ??
+                        sub?.product?.price?.subscription_period_interval ??
+                        sub?.subscription_period_interval ??
+                        sub?.interval ??
+                        data?.subscription_period_interval ??
+                        data?.interval;
+                    interval = rawInterval ? String(rawInterval).toLowerCase() : undefined;
+                }
+            } catch (e) {
+                console.warn('Unable to compute interval from subscription; falling back to event', e);
+                interval = (data?.subscription_period_interval || data?.interval)?.toLowerCase?.();
+            }
+
             if (uid && subscription_id && customer_id) {
-                await db.collection('users').doc(uid).set({
+                // Prefer recent plan change target within a short window to avoid reverting interval
+                let finalInterval = interval;
+                try {
+                    const userDocSnap = await db.collection('users').doc(String(uid)).get();
+                    if (userDocSnap.exists) {
+                        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                        const udata: any = userDocSnap.data();
+                        const lastPlanChangeAtStr = udata?.lastPlanChangeAt;
+                        const lastPlanChangeAtMs = lastPlanChangeAtStr ? Date.parse(lastPlanChangeAtStr) : NaN;
+                        const targetProductId = udata?.targetProductId;
+                        const within5m =
+                            lastPlanChangeAtStr &&
+                            !Number.isNaN(lastPlanChangeAtMs) &&
+                            Date.now() - lastPlanChangeAtMs < 5 * 60_000;
+
+                        if (within5m && targetProductId) {
+                            const monthly = process.env.NEXT_PUBLIC_DODO_PRODUCT_MONTHLY;
+                            const yearly = process.env.NEXT_PUBLIC_DODO_PRODUCT_YEARLY;
+                            if (monthly && String(targetProductId) === String(monthly)) {
+                                finalInterval = 'month';
+                            } else if (yearly && String(targetProductId) === String(yearly)) {
+                                finalInterval = 'year';
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.warn('Webhook interval override check failed (plan_changed/renewed)', e);
+                }
+
+                const updateDoc: Record<string, unknown> = {
                     subscriptionStatus: 'active',
                     dodoSubscriptionId: subscription_id,
                     dodoCustomerId: customer_id,
                     credits: -1,
-                }, { merge: true });
+                };
+                if (finalInterval) {
+                    updateDoc['subscriptionInterval'] = finalInterval;
+                }
+                const targetRef2 = db.collection('users').doc(String(uid));
+                // Capture "before" snapshot for audit
+                let beforeAudit2: Record<string, unknown> | null = null;
+                try {
+                    const beforeSnap2 = await targetRef2.get();
+                    if (beforeSnap2.exists) {
+                        const b2: any = beforeSnap2.data(); // eslint-disable-line @typescript-eslint/no-explicit-any
+                        beforeAudit2 = {
+                            subscriptionInterval: b2?.subscriptionInterval ?? null,
+                            subscriptionStatus: b2?.subscriptionStatus ?? null,
+                            dodoSubscriptionId: b2?.dodoSubscriptionId ?? null,
+                        };
+                    }
+                } catch { }
+                await targetRef2.set(updateDoc, { merge: true });
+                // Best-effort audit
+                await auditSubscriptionWrite(String(uid), {
+                    source: 'webhook',
+                    eventContext: { eventType: type, subscriptionId: subscription_id, customerId: customer_id || null },
+                    before: beforeAudit2,
+                    after: updateDoc,
+                    mapping: {
+                        computedFinalInterval: finalInterval ?? null,
+                        originalInterval: interval ?? null,
+                        monthlyEnv: process.env.NEXT_PUBLIC_DODO_PRODUCT_MONTHLY || null,
+                        yearlyEnv: process.env.NEXT_PUBLIC_DODO_PRODUCT_YEARLY || null,
+                    },
+                });
             } else {
                 console.error('Missing identifiers on plan_changed/renewed', { uid, subscription_id, customer_id });
             }
@@ -412,6 +639,14 @@ export async function POST(req: Request) {
             }
         }
 
+        try {
+            await db.collection('dodo_webhooks').doc(String(webhookId)).set(
+                { processedAt: new Date().toISOString(), status: 'processed' },
+                { merge: true }
+            );
+        } catch (e) {
+            console.warn('Failed to mark webhook processed', e);
+        }
         return NextResponse.json({ received: true });
     } catch (error: unknown) {
         console.error('Webhook Error Details:', error);
@@ -422,8 +657,8 @@ export async function POST(req: Request) {
             console.error('FIREBASE_SERVICE_ACCOUNT_KEY is missing!');
         }
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        // ACK with 200 to avoid webhook retry loops; error is logged for investigation
-        return NextResponse.json({ received: true, warning: `Webhook Error: ${errorMessage}` }, { status: 200 });
+        // Return 5xx so Dodo retries on transient failures
+        return NextResponse.json({ error: `Webhook processing failed: ${errorMessage}` }, { status: 500 });
     }
 }
 

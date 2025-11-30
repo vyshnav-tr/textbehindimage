@@ -827,7 +827,7 @@ const ImageEditorPage = () => {
 
                     setIsRemovingBackground(true);
                     setBackgroundRemovalProgress(0);
-                    setLoadingStatus('Initializing...');
+                    setLoadingStatus('Analysing image...');
                     try {
                         // Deduct credit if not pro
                         if (subscriptionStatus !== 'active' && auth.currentUser) {
@@ -843,14 +843,18 @@ const ImageEditorPage = () => {
                             setCredits(data.remainingCredits);
                         }
 
-                        setLoadingStatus('Removing background (local)...');
+                        setLoadingStatus('Auto editing...');
 
                         // Use client-side background removal
                         const blob = await removeBackground(processedBlob, {
                             progress: (key, current, total) => {
                                 const progress = Math.round((current / total) * 100);
                                 setBackgroundRemovalProgress(progress);
-                                setLoadingStatus(`Processing: ${progress}%`);
+                                if (progress === 100) {
+                                    setLoadingStatus('Auto editing...');
+                                } else {
+                                    setLoadingStatus(`Analysing image: ${progress}%`);
+                                }
                             }
                         });
 

@@ -62,7 +62,19 @@ export function PricingDialog({ open, onOpenChange, uid, subscriptionStatus, dod
             });
             const data = await response.json();
             if (data.success) {
-                // Show success message or reload page
+                // Force-sync Firestore with latest subscription from Dodo to avoid stale UI
+                try {
+                    await fetch('/api/subscription/sync', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            uid,
+                            subscriptionId: dodoSubscriptionId,
+                        }),
+                    });
+                } catch (e) {
+                    console.warn('Subscription sync after upgrade failed', e);
+                }
                 alert('Subscription upgraded successfully!');
                 window.location.reload();
             } else {
@@ -120,6 +132,7 @@ export function PricingDialog({ open, onOpenChange, uid, subscriptionStatus, dod
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     productId: plan === 'monthly' ? process.env.NEXT_PUBLIC_DODO_PRODUCT_MONTHLY : process.env.NEXT_PUBLIC_DODO_PRODUCT_YEARLY,
+                    plan, // send plan so server can resolve product id safely per environment
                     uid,
                     email: auth.currentUser?.email,
                     name: auth.currentUser?.displayName

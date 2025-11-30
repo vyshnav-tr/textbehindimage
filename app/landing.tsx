@@ -156,6 +156,93 @@ const LandingPage = () => {
   };
 
 
+  const handleSwitchPlan = async (target: 'monthly' | 'yearly') => {
+    // Require auth
+    if (!user) {
+      router.push('/login');
+      return;
+    }
+    if (!dodoSubscriptionId) {
+      alert('No active subscription found to switch.');
+      return;
+    }
+
+    logAnalyticsEvent('switch_plan', { target });
+
+    // Reuse existing loading keys
+    setLoading(target);
+    try {
+      const newProductId =
+        target === 'monthly'
+          ? process.env.NEXT_PUBLIC_DODO_PRODUCT_MONTHLY
+          : process.env.NEXT_PUBLIC_DODO_PRODUCT_YEARLY;
+
+      const res = await fetch('/api/subscription/upgrade', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          subscriptionId: dodoSubscriptionId,
+          newProductId,
+          uid: user.uid,
+        }),
+      });
+
+      const data = await res.json();
+      if (res.ok && data?.success) {
+        // Update local UI state immediately without full reload
+        const newInterval = target === 'monthly' ? 'month' : 'year';
+        setSubscriptionStatus('active');
+        setSubscriptionInterval(newInterval);
+
+        // Force-sync Firestore from Dodo so DB reflects the new interval promptly
+        try {
+          const syncRes = await fetch('/api/subscription/sync', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ uid: user.uid, subscriptionId: dodoSubscriptionId }),
+          });
+          const syncData = await syncRes.json();
+          if (syncRes.ok) {
+            if (syncData.subscriptionInterval) setSubscriptionInterval(syncData.subscriptionInterval);
+            if (syncData.dodoCustomerId) setDodoCustomerId(syncData.dodoCustomerId);
+            if (syncData.dodoSubscriptionId) setDodoSubscriptionId(syncData.dodoSubscriptionId);
+          } else {
+            console.warn('Subscription sync failed:', syncData?.error);
+          }
+        } catch (e) {
+          console.warn('Unable to force sync subscription', e);
+        }
+
+        // Also re-fetch from server to ensure state matches backend/webhooks
+        try {
+          const fresh = await fetch(`/api/user/credits?uid=${user.uid}`, {
+            method: 'GET',
+            headers: { 'cache-control': 'no-store' },
+          });
+          const freshData = await fresh.json();
+          if (fresh.ok) {
+            setSubscriptionStatus(freshData.subscriptionStatus);
+            setDodoCustomerId(freshData.dodoCustomerId);
+            setDodoSubscriptionId(freshData.dodoSubscriptionId);
+            setSubscriptionInterval(freshData.subscriptionInterval);
+          } else {
+            console.warn('Refresh of subscription state failed:', freshData?.error);
+          }
+        } catch (e) {
+          console.warn('Unable to refresh subscription state from server', e);
+        }
+
+        alert('Plan switched successfully.');
+      } else {
+        throw new Error(data?.error || 'Failed to switch plan');
+      }
+    } catch (error) {
+      console.error('Error switching plan:', error);
+      alert(error instanceof Error ? error.message : 'Error switching plan');
+    } finally {
+      setLoading(null);
+    }
+  };
 
   const steps = [
     {
@@ -525,7 +612,7 @@ const LandingPage = () => {
                 </Button>
               ) : (
                 <Button
-                  onClick={() => subscriptionStatus === 'active' ? handlePortal() : handleCheckout('monthly')}
+                  onClick={() => subscriptionStatus === 'active' ? handleSwitchPlan('monthly') : handleCheckout('monthly')}
                   disabled={loading === 'monthly' || loading === 'portal'}
                   className="w-full bg-black text-white hover:bg-gray-800 py-6 rounded-xl text-lg font-bold"
                 >
@@ -573,7 +660,7 @@ const LandingPage = () => {
                 </Button>
               ) : (
                 <Button
-                  onClick={() => subscriptionStatus === 'active' ? handlePortal() : handleCheckout('yearly')}
+                  onClick={() => subscriptionStatus === 'active' ? handleSwitchPlan('yearly') : handleCheckout('yearly')}
                   disabled={loading === 'yearly' || loading === 'portal'}
                   className="w-full bg-white text-black hover:bg-gray-200 py-6 rounded-xl text-lg font-bold"
                 >
