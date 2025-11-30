@@ -577,7 +577,40 @@ const LandingPage = () => {
             <p className="text-gray-600 text-lg">Start for free, upgrade for power.</p>
           </div>
 
-          <div className="grid md:grid-cols-2 gap-8 max-w-4xl mx-auto">
+          <div className="grid md:grid-cols-3 gap-8 max-w-7xl mx-auto">
+            {/* Free Plan */}
+            <motion.div
+              whileHover={{ y: -10 }}
+              className={`bg-white rounded-3xl p-8 border ${user && subscriptionStatus === 'free' ? 'border-green-500' : 'border-gray-200'} flex flex-col relative hover:shadow-xl transition-all shadow-sm`}
+            >
+              {user && subscriptionStatus === 'free' && (
+                <div className="absolute top-4 right-4 bg-green-500 text-white px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider">
+                  Current Plan
+                </div>
+              )}
+              <div className="mb-8">
+                <h3 className="text-2xl font-bold mb-2">Free</h3>
+                <p className="text-gray-500">For personal projects</p>
+              </div>
+              <div className="flex items-baseline mb-8">
+                <span className="text-5xl font-bold">$0</span>
+                <span className="text-gray-500 ml-2">/forever</span>
+              </div>
+              <ul className="space-y-4 mb-8 flex-1">
+                {['Basic Text Behind Image', 'Standard Quality Export', 'Community Support'].map((item, i) => (
+                  <li key={i} className="flex items-center gap-3 text-gray-700">
+                    <div className="w-6 h-6 rounded-full bg-black/5 flex items-center justify-center">
+                      <Check className="w-3 h-3" />
+                    </div>
+                    {item}
+                  </li>
+                ))}
+              </ul>
+              <Button onClick={() => router.push('/editor')} className="w-full bg-white text-black border-2 border-black hover:bg-gray-50 py-6 rounded-xl text-lg font-bold">
+                {user && subscriptionStatus === 'free' ? 'Go to Dashboard' : 'Try for Free'}
+              </Button>
+            </motion.div>
+
             {/* Monthly Plan */}
             <motion.div
               whileHover={{ y: -10 }}
