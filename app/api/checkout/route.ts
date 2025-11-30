@@ -4,9 +4,7 @@ import { dodo } from '@/lib/dodo';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-const isLive =
-    process.env.DODO_PAYMENTS_ENV === 'live_mode' ||
-    process.env.NODE_ENV === 'production';
+
 
 export async function POST(req: Request) {
     try {
@@ -84,10 +82,11 @@ export async function POST(req: Request) {
         });
 
         // Be defensive about possible response shapes across SDK versions
+        const typedSession = session as { link?: string; checkout_url?: string; url?: string };
         const url =
-            (session as any)?.link ||
-            (session as any)?.checkout_url ||
-            (session as any)?.url;
+            typedSession?.link ||
+            typedSession?.checkout_url ||
+            typedSession?.url;
 
         if (!url || typeof url !== 'string') {
             console.error('Checkout session did not include a URL payload', session);

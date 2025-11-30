@@ -77,14 +77,13 @@ export async function POST(req: Request) {
         // Idempotency: ensure each webhook-id is processed once
         try {
             // Use create to fail if the document already exists
-            // @ts-ignore - admin SDK provides create()
             await db.collection('dodo_webhooks').doc(String(webhookId)).create({
                 createdAt: new Date().toISOString(),
                 type: type || 'unknown',
                 status: 'processing',
             });
-        } catch (e: any) {
-            const msg = String(e?.message || '');
+        } catch (e: unknown) {
+            const msg = String((e as Error)?.message || '');
             if (msg.includes('ALREADY_EXISTS') || msg.includes('already exists')) {
                 // Already processed; ack success
                 return NextResponse.json({ received: true, duplicate: true });
